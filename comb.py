@@ -53,8 +53,8 @@ def main():
         help="Folder to search (default: current directory)",
     )
     parser.add_argument(
-        "--clean", action="store_true",
-        help="Clear the cache after building (useful for saving space if you only need to search once)"
+        "--clear", action="store_true",
+        help="Clear the cache after building (useful for saving space if you only need to search once). If --clear is used on its own, it will clear the cache without searching.",
     )
     parser.add_argument(
         "--workers", type=int, default=1,
@@ -75,9 +75,17 @@ def main():
         except KeyboardInterrupt:
             print("\nBuild interrupted by user. Saving partial cache.")
         return
+    
+    if args.clear and not args.term:
+        cleared = clear_cache(folder)
+        if cleared and args.verbose:
+            print("Cache cleared.")
+        elif not cleared and args.verbose:
+            print("No cache to clear.")
+        return
 
     if not args.term:
-        parser.error("a search term is required unless --build is given")
+        parser.error("a search term is required unless --build or --clear is given")
 
     cache_newly_built = False
     try:
@@ -100,7 +108,7 @@ def main():
     
     search_cache(folder, args.term, context=args.context)
 
-    if args.clean:
+    if args.clear:
         cleared = clear_cache(folder)
         
         if cleared and args.verbose:

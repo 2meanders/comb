@@ -60,7 +60,7 @@ def _index_entry(entry, verbose: bool) -> dict:
     }
 
 
-def build_cache(folder: Path, force: bool = False, verbose: bool = True, workers: int = 1) -> None:
+def build_cache(folder: Path, force: bool = False, verbose: bool = True, workers: int = 1, cache_all: bool = False) -> None:
     """(Re)build the cache for `folder`. Unless force=True, files whose
     mtime/size haven't changed since the last build are skipped."""
     folder = Path(folder)
@@ -74,7 +74,7 @@ def build_cache(folder: Path, force: bool = False, verbose: bool = True, workers
     pending = []
     indexed_results = []
     try:
-        for entry in iter_entries(folder):
+        for entry in iter_entries(folder, cache_all=cache_all):
             seen.add(entry.virtual_path)
             existing = files.get(entry.virtual_path)
 
