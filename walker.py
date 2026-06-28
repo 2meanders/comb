@@ -10,6 +10,7 @@ or, for nested zips:
     outer.zip:inner.zip:deep/file.txt
 """
 
+import fnmatch
 import io
 import shutil
 import tempfile
@@ -20,6 +21,47 @@ from typing import Callable, Iterator, BinaryIO, Union
 
 CACHE_FILENAME = ".comb_cache.json"
 
+# Directory names that should never be descended into (checked against any
+# path component, both on disk and inside zip archives).
+IGNORED_DIR_NAMES = {
+    ".git", ".svn", ".hg", ".idea", ".vscode",
+    "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache",
+    ".tox", ".venv", "venv", "env", "dist", "build", ".next", ".cache",
+}
+
+# Filename glob patterns to skip, regardless of which directory they're in.
+IGNORED_FILE_PATTERNS = (
+    "*.min.js",
+    "*.min.css",
+    "*.map",
+    "*.pyc",
+    "*.pyo",
+    "*.so",
+    "*.dll",
+    "*.exe",
+    "*.lock",
+    "*.log",
+    ".DS_Store",
+)
+
+
+def _is_ignored_path(rel_path: str) -> bool:
+    """Check a '/'-separated relative path (disk-relative or zip-internal)
+    against the ignore rules."""
+    parts = rel_path.replace("\\", "/").split("/")
+    filename = parts[-1]
+
+    for part in parts[:-1]:
+        if part in IGNORED_DIR_NAMES:
+            return True
+
+    for pattern in IGNORED_FILE_PATTERNS:
+        if fnmatch.fnmatch(filename.lower(), pattern):
+            return True
+
+    return False
+
+
 @dataclass
 class Entry:
     virtual_path: str          # path used as the cache key / display path
@@ -28,7 +70,7 @@ class Entry:
     data_func: Callable[[], Union[bytes, Path, BinaryIO]]
 
 
-def iter_entries(root: Path) -> Iterator[Entry]:
+def iter_entries(root: Path, cache_all: bool) -> Iterator[Entry]:
     """Walk `root` on disk, yielding an Entry for every real file and every
     file found inside (possibly nested) zip archives."""
     root = Path(root)
@@ -39,12 +81,15 @@ def iter_entries(root: Path) -> Iterator[Entry]:
             continue
 
         rel = str(path.relative_to(root))
+        if not cache_all and _is_ignored_path(rel):
+            continue
+
         stat = path.stat()
 
         if path.suffix.lower() == ".zip":
             try:
                 with zipfile.ZipFile(path, "r") as zf:
-                    yield from _iter_zip(rel, zf, stat.st_mtime, archive_source=path)
+                    yield from _iter_zip(rel, zf, stat.st_mtime, archive_source=path, cache_all=cache_all)
             except (OSError, zipfile.BadZipFile):
                 continue
         else:
@@ -90,12 +135,15 @@ def _make_zip_reader(source: Union[Path, io.BytesIO, BinaryIO], filename: str) -
     return _read
 
 
-def _iter_zip(prefix: str, zf: zipfile.ZipFile, mtime: float, archive_source: Union[Path, io.BytesIO, BinaryIO, None] = None) -> Iterator[Entry]:
+def _iter_zip(prefix: str, zf: zipfile.ZipFile, mtime: float, archive_source: Union[Path, io.BytesIO, BinaryIO, None] = None, cache_all: bool = False) -> Iterator[Entry]:
     """Yield an Entry for every file inside the archive, recursing into any
     nested zips found inside it."""
     for info in zf.infolist():
         if info.is_dir():
             continue
+        if not cache_all and _is_ignored_path(info.filename):
+            continue
+
         vpath = f"{prefix}:{info.filename}"
 
         if info.filename.lower().endswith(".zip"):

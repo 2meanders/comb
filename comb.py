@@ -60,6 +60,10 @@ def main():
         "--workers", type=int, default=1,
         help="Number of worker threads to use while building the cache (default: 1)",
     )
+    parser.add_argument(
+        "-a", "--all", action="store_true",
+        help="Show all files. Normally, folders and files like .git are ignored.",
+    )
 
 
     args = parser.parse_args()
@@ -67,7 +71,7 @@ def main():
 
     if args.build:
         try:
-            build_cache(folder, force=args.force, verbose=args.verbose, workers=args.workers)
+            build_cache(folder, force=args.force, verbose=args.verbose, workers=args.workers, cache_all=args.all)
         except KeyboardInterrupt:
             print("\nBuild interrupted by user. Saving partial cache.")
         return
@@ -79,7 +83,7 @@ def main():
     try:
         if load_cache(folder) is None:
             print("No cache found, building one first (this may take a while)...")
-            build_cache(folder, verbose=args.verbose, workers=args.workers)
+            build_cache(folder, verbose=args.verbose, workers=args.workers, cache_all=args.all)
             cache_newly_built = True
     except KeyboardInterrupt:
         print("\nCache loading interrupted by user. Exiting.")
@@ -88,7 +92,7 @@ def main():
     try:
         if not args.no_update and not cache_newly_built:
             print("Updating cache...")
-            build_cache(folder, verbose=args.verbose, workers=args.workers)
+            build_cache(folder, verbose=args.verbose, workers=args.workers, cache_all=args.all)
             print("Searching...")
     except KeyboardInterrupt:
         print("\nCache update interrupted by user. Exiting.")
