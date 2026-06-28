@@ -21,6 +21,15 @@ from cache import build_cache, load_cache, clear_cache
 from search_engine import search_cache
 
 
+def _clear_cache(folder: Path, verbose: bool):
+    cleared = clear_cache(folder)
+    if verbose:
+        if cleared:
+            print("Cache cleared.")
+        else:
+            print("No cache to clear.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -77,11 +86,7 @@ def main():
         return
     
     if args.clear and not args.term:
-        cleared = clear_cache(folder)
-        if cleared and args.verbose:
-            print("Cache cleared.")
-        elif not cleared and args.verbose:
-            print("No cache to clear.")
+        _clear_cache(folder, verbose=args.verbose)
         return
 
     if not args.term:
@@ -95,6 +100,8 @@ def main():
             cache_newly_built = True
     except KeyboardInterrupt:
         print("\nCache loading interrupted by user. Exiting.")
+        if args.clear:
+            _clear_cache(folder, verbose=args.verbose)
         return
     
     try:
@@ -104,17 +111,20 @@ def main():
             print("Searching...")
     except KeyboardInterrupt:
         print("\nCache update interrupted by user. Exiting.")
+        if args.clear:
+            _clear_cache(folder, verbose=args.verbose)
         return
     
-    search_cache(folder, args.term, context=args.context)
-
+    try:
+        search_cache(folder, args.term, context=args.context)
+    except KeyboardInterrupt:
+        print("\nSearch interrupted by user. Exiting.")
+        if args.clear:
+            _clear_cache(folder, verbose=args.verbose)
+        return
+    
     if args.clear:
-        cleared = clear_cache(folder)
-        
-        if cleared and args.verbose:
-            print("Cache cleared.")
-        elif not cleared and args.verbose:
-            print("No cache to clear.")
+        _clear_cache(folder, verbose=args.verbose)
 
 
 if __name__ == "__main__":
