@@ -63,7 +63,7 @@ def main():
     )
     parser.add_argument(
         "--clear", action="store_true",
-        help="Clear the cache after building (useful for saving space if you only need to search once). If --clear is used on its own, it will clear the cache without searching.",
+        help="If used on its own, it will clear the cache if present. If used with a search term, it will clear the cache after searching.",
     )
     parser.add_argument(
         "--workers", type=int, default=1,
