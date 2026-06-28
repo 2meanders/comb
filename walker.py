@@ -124,21 +124,19 @@ def _iter_zip_from_file(
     size: int,
 ) -> Iterator[Entry]:
     """Walk a nested zip archive from a file-like object without loading it all into RAM."""
-    if size <= 20 * 1024 * 1024:
-        blob = fileobj.read()
-        source = io.BytesIO(blob)
-        try:
-            with zipfile.ZipFile(source) as inner_zf:
-                yield from _iter_zip(prefix, inner_zf, mtime, archive_source=source)
-        except zipfile.BadZipFile:
-            return
+    MAX_IN_MEMORY_SIZE = 20 * 1024 * 1024  # 20 MB
+    # Use an in-memory buffer for small files, spill to disk for large ones.
+    if size <= MAX_IN_MEMORY_SIZE:
+        buffer = io.BytesIO(fileobj.read())
     else:
-        tmp = tempfile.SpooledTemporaryFile(max_size=20 * 1024 * 1024)
-        shutil.copyfileobj(fileobj, tmp)
-        tmp.seek(0)
-        try:
-            with zipfile.ZipFile(tmp) as inner_zf:
-                yield from _iter_zip(prefix, inner_zf, mtime, archive_source=tmp)
-        except zipfile.BadZipFile:
-            tmp.close()
-            return
+        buffer = tempfile.SpooledTemporaryFile(max_size=MAX_IN_MEMORY_SIZE)
+        shutil.copyfileobj(fileobj, buffer)
+        buffer.seek(0)
+
+    try:
+        with zipfile.ZipFile(buffer) as inner_zf:
+            yield from _iter_zip(prefix, inner_zf, mtime, archive_source=buffer)
+    except zipfile.BadZipFile:
+        return
+    finally:
+        buffer.close()
