@@ -1,0 +1,5 @@
+Pillow
+pytesseract
+pdfplumber
+pdf2image
+pillow-heif
