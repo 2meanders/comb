@@ -46,6 +46,7 @@ def save_cache(folder: Path, cache: dict) -> None:
 def _index_entry(entry) -> dict:
     try:
         data = entry.data_func()
+        print(f"  + indexing {entry.virtual_path} ... ")
         text = extract_text(entry.virtual_path, data)
     except Exception:
         text = ""
@@ -93,17 +94,7 @@ def build_cache(folder: Path, force: bool = False, verbose: bool = True, workers
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 indexed_results = list(executor.map(_index_entry, pending))
 
-        for item in indexed_results:
-            if verbose:
-                print(f"  + indexing {item['virtual_path']} ... ", end="", flush=True)
-            files[item["virtual_path"]] = {
-                "mtime": item["mtime"],
-                "size": item["size"],
-                "text": item["text"],
-            }
-            count_new += 1
-            if verbose:
-                print(f"({len(item['text'])} chars)")
+        count_new += len(indexed_results)
 
         removed = [k for k in files if k not in seen]
         count_removed = len(removed)
