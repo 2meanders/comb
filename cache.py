@@ -43,10 +43,11 @@ def save_cache(folder: Path, cache: dict) -> None:
         json.dump(cache, f)
 
 
-def _index_entry(entry) -> dict:
+def _index_entry(entry, verbose: bool) -> dict:
     try:
         data = entry.data_func()
-        print(f"  + indexing {entry.virtual_path} ... ")
+        if verbose:
+            print(f"  + indexing {entry.virtual_path} ... ")
         text = extract_text(entry.virtual_path, data)
     except Exception:
         text = ""
@@ -71,7 +72,7 @@ def build_cache(folder: Path, force: bool = False, verbose: bool = True, workers
     count_skip = 0
     count_removed = 0
     pending = []
-
+    indexed_results = []
     try:
         for entry in iter_entries(folder):
             seen.add(entry.virtual_path)
@@ -88,13 +89,23 @@ def build_cache(folder: Path, force: bool = False, verbose: bool = True, workers
             pending.append(entry)
 
         if workers <= 1:
-            indexed_results = [_index_entry(entry) for entry in pending]
+            for entry in pending:
+                if verbose:
+                    print(f"  + indexing {entry.virtual_path} ... ")
+                indexed_results.append(_index_entry(entry, verbose))
         else:
             worker_count = max(1, min(workers, len(pending) or 1))
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                indexed_results = list(executor.map(_index_entry, pending))
+                indexed_results = list(executor.map(lambda e: _index_entry(e, verbose=verbose), pending))
 
+    finally:
         count_new += len(indexed_results)
+        for item in indexed_results:
+            files[item["virtual_path"]] = {
+                    "mtime": item["mtime"],
+                    "size": item["size"],
+                    "text": item["text"],
+                }
 
         removed = [k for k in files if k not in seen]
         count_removed = len(removed)
@@ -102,7 +113,7 @@ def build_cache(folder: Path, force: bool = False, verbose: bool = True, workers
             del files[k]
             if verbose:
                 print(f"  - removing {k} from cache")
-    finally:
+
         # Save the cache
         cache["files"] = files
         cache["built_at"] = time.time()
