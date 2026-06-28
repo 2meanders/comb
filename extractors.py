@@ -8,6 +8,7 @@ return the best-effort plaintext content of that file:
   * images              -> OCR text via pytesseract (empty if none found)
   * PDFs                -> embedded text; if none, OCR each page; else empty
   * Office docs         -> .docx / .xlsx / .xlsm / .pptx text extraction
+  * audio               -> transcription via OpenAI Whisper
   * unknown extensions  -> sniff content; decode if it looks like text,
                            otherwise treat as binary and skip
 """
@@ -41,6 +42,27 @@ DOCX_EXTS = {".docx"}
 XLSX_EXTS = {".xlsx", ".xlsm"}
 PPTX_EXTS = {".pptx"}
 
+# Audio formats transcribed via OpenAI Whisper. ffmpeg must be installed
+# and on PATH -- whisper shells out to it to decode/resample audio.
+AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac", ".wma", ".opus"}
+
+# Whisper model size used for transcription. "base" is a reasonable
+# speed/accuracy default; swap for "tiny"/"small"/"medium"/"large" as needed.
+WHISPER_MODEL_SIZE = "base"
+
+# Loaded lazily on first use and cached for the lifetime of the process,
+# since loading the model is expensive (downloads + GPU/CPU init) and we
+# don't want to repeat that for every audio file in a batch.
+_whisper_model = None
+
+
+def _get_whisper_model():
+    global _whisper_model
+    if _whisper_model is None:
+        import whisper
+        _whisper_model = whisper.load_model(WHISPER_MODEL_SIZE)
+    return _whisper_model
+
 
 def extract_text(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
     """Dispatch to the right extractor based on file extension.
@@ -60,6 +82,8 @@ def extract_text(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
             return _extract_xlsx(data)
         elif ext in PPTX_EXTS:
             return _extract_pptx(data)
+        elif ext in AUDIO_EXTS:
+            return _extract_audio(filename, data)
         else:
             # Unknown/missing extension: sniff the content instead of
             # guessing blind. If it looks like text, treat it as plaintext;
@@ -228,6 +252,48 @@ def _extract_pptx(data: Union[bytes, Path, BinaryIO]) -> str:
             pieces.extend(slide_lines)
 
     return "\n".join(pieces)
+
+
+def _extract_audio(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
+    """Transcribe an audio file to text using OpenAI Whisper.
+
+    Whisper's `transcribe()` shells out to ffmpeg internally and expects a
+    real file path, so bytes/file-like input is written to a temp file
+    first (same pattern as PDF handling below).
+    """
+    audio_path, cleanup = _ensure_audio_path(filename, data)
+    try:
+        model = _get_whisper_model()
+        result = model.transcribe(str(audio_path))
+        return result.get("text", "").strip()
+    except Exception as e:
+        print(f"Warning: failed to transcribe audio file {filename}: {e}")
+    finally:
+        if cleanup:
+            try:
+                audio_path.unlink()
+            except OSError:
+                pass
+
+
+def _ensure_audio_path(filename: str, data: Union[bytes, Path, BinaryIO]) -> tuple[Path, bool]:
+    if isinstance(data, Path):
+        return data, False
+
+    # Preserve the original suffix so ffmpeg's format sniffing has a hint
+    # to work with (it also inspects file contents, but this avoids
+    # ambiguity for less common containers).
+    suffix = os.path.splitext(filename)[1] or ".audio"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        if isinstance(data, bytes):
+            tmp.write(data)
+        else:
+            data.seek(0)
+            shutil.copyfileobj(data, tmp)
+    finally:
+        tmp.close()
+    return Path(tmp.name), True
 
 
 def _extract_pdf(data: Union[bytes, Path, BinaryIO]) -> str:

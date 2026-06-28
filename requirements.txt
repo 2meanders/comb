@@ -3,3 +3,7 @@ pytesseract
 pdfplumber
 pdf2image
 pillow-heif
+python-docx
+python-pptx
+openpyxl
+openai-whisper
