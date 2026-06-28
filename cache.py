@@ -90,8 +90,6 @@ def build_cache(folder: Path, force: bool = False, verbose: bool = True, workers
 
         if workers <= 1:
             for entry in pending:
-                if verbose:
-                    print(f"  + indexing {entry.virtual_path} ... ")
                 indexed_results.append(_index_entry(entry, verbose))
         else:
             worker_count = max(1, min(workers, len(pending) or 1))
