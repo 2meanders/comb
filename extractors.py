@@ -7,6 +7,7 @@ return the best-effort plaintext content of that file:
   * plaintext-ish files -> decoded text
   * images              -> OCR text via pytesseract (empty if none found)
   * PDFs                -> embedded text; if none, OCR each page; else empty
+  * Office docs         -> .docx / .xlsx / .xlsm / .pptx text extraction
   * unknown extensions  -> sniff content; decode if it looks like text,
                            otherwise treat as binary and skip
 """
@@ -31,6 +32,16 @@ PLAINTEXT_EXTS = {
 register_heif_opener()
 IMAGE_EXTS = {ex for ex, f in Image.registered_extensions().items() if f in Image.OPEN}
 
+# Modern, XML-based Office formats only. Legacy binary formats (.doc, .xls,
+# .ppt -- pre-2007) use a completely different file structure and are NOT
+# handled by python-docx/openpyxl/python-pptx. They'd fall through to the
+# "unknown extension" sniffing path below and almost certainly be skipped
+# as binary.
+DOCX_EXTS = {".docx"}
+XLSX_EXTS = {".xlsx", ".xlsm"}
+PPTX_EXTS = {".pptx"}
+
+
 def extract_text(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
     """Dispatch to the right extractor based on file extension.
     Never raises -- returns "" on any failure so a single bad file
@@ -43,12 +54,18 @@ def extract_text(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
             return _extract_image(data)
         elif ext == ".pdf":
             return _extract_pdf(data)
+        elif ext in DOCX_EXTS:
+            return _extract_docx(data)
+        elif ext in XLSX_EXTS:
+            return _extract_xlsx(data)
+        elif ext in PPTX_EXTS:
+            return _extract_pptx(data)
         else:
             # Unknown/missing extension: sniff the content instead of
             # guessing blind. If it looks like text, treat it as plaintext;
             # if it looks binary, don't try to decode it.
             raw_bytes = _read_bytes(data)
-            if is_probably_text(raw_bytes):
+            if _is_probably_text(raw_bytes):
                 return _decode_bytes(raw_bytes)
             return ""
     except Exception:
@@ -56,7 +73,7 @@ def extract_text(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
     return ""
 
 
-def is_probably_text(raw_bytes: bytes, sample_size: int = 8000) -> bool:
+def _is_probably_text(raw_bytes: bytes, sample_size: int = 8000) -> bool:
     """Heuristically decide whether raw_bytes looks like plaintext or binary.
 
     Mirrors the approach used by tools like `file`/git:
@@ -85,6 +102,18 @@ def _read_bytes(data: Union[bytes, Path, BinaryIO]) -> bytes:
         return data.read_bytes()
     data.seek(0)
     return data.read()
+
+
+def _as_file_like(data: Union[bytes, Path, BinaryIO]):
+    """Return something openable by libraries that accept a path-or-file-obj
+    (python-docx, openpyxl, python-pptx all accept a filename or a
+    file-like object with .read())."""
+    if isinstance(data, bytes):
+        return io.BytesIO(data)
+    if isinstance(data, Path):
+        return str(data)
+    data.seek(0)
+    return data
 
 
 def _decode_bytes(raw_bytes: bytes) -> str:
@@ -116,6 +145,89 @@ def _extract_image(data: Union[bytes, Path, BinaryIO]) -> str:
 
     text = pytesseract.image_to_string(img)
     return text.strip()
+
+
+def _extract_docx(data: Union[bytes, Path, BinaryIO]) -> str:
+    """Extract text from a .docx: paragraphs, tables, and headers/footers."""
+    import docx
+
+    doc = docx.Document(_as_file_like(data))
+    pieces = []
+
+    for para in doc.paragraphs:
+        if para.text:
+            pieces.append(para.text)
+
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [cell.text for cell in row.cells if cell.text]
+            if cells:
+                pieces.append("\t".join(cells))
+
+    for section in doc.sections:
+        for part in (section.header, section.footer):
+            for para in part.paragraphs:
+                if para.text:
+                    pieces.append(para.text)
+
+    return "\n".join(pieces)
+
+
+def _extract_xlsx(data: Union[bytes, Path, BinaryIO]) -> str:
+    """Extract text from .xlsx/.xlsm: every cell's value, sheet by sheet."""
+    import openpyxl
+
+    wb = openpyxl.load_workbook(_as_file_like(data), data_only=True, read_only=True)
+    pieces = []
+    try:
+        for sheet in wb.worksheets:
+            sheet_lines = []
+            for row in sheet.iter_rows(values_only=True):
+                values = [str(v) for v in row if v is not None]
+                if values:
+                    sheet_lines.append("\t".join(values))
+            if sheet_lines:
+                pieces.append(f"# {sheet.title}")
+                pieces.extend(sheet_lines)
+    finally:
+        wb.close()
+
+    return "\n".join(pieces)
+
+
+def _extract_pptx(data: Union[bytes, Path, BinaryIO]) -> str:
+    """Extract text from .pptx: all text frames and table cells, per slide,
+    plus speaker notes."""
+    from pptx import Presentation
+
+    prs = Presentation(_as_file_like(data))
+    pieces = []
+
+    for slide_number, slide in enumerate(prs.slides, start=1):
+        slide_lines = []
+
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    text = "".join(run.text for run in para.runs)
+                    if text:
+                        slide_lines.append(text)
+            elif shape.has_table:
+                for row in shape.table.rows:
+                    cells = [cell.text for cell in row.cells if cell.text]
+                    if cells:
+                        slide_lines.append("\t".join(cells))
+
+        if slide.has_notes_slide:
+            notes_text = slide.notes_slide.notes_text_frame.text
+            if notes_text:
+                slide_lines.append(f"[notes] {notes_text}")
+
+        if slide_lines:
+            pieces.append(f"# Slide {slide_number}")
+            pieces.extend(slide_lines)
+
+    return "\n".join(pieces)
 
 
 def _extract_pdf(data: Union[bytes, Path, BinaryIO]) -> str:

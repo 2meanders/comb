@@ -1,7 +1,7 @@
 # comb
 
 A program designed for searching archives.  
-It searches for text inside text files, PDFs, images, zip files (even nested zip files).
+It searches for text inside text files, PDFs, images, Microsoft Office files, zip files (even nested zip files).
 
 ## Quick usage
 
