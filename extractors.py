@@ -17,10 +17,21 @@ import io
 import os
 import shutil
 import tempfile
+import threading
 from pathlib import Path
 from typing import BinaryIO, Union
 from PIL import Image
 from pillow_heif import register_heif_opener
+import whisper
+import pytesseract
+import docx
+import subprocess
+import openpyxl
+from pptx import Presentation
+import pdfplumber
+from pdf2image import convert_from_path
+import pytesseract
+
 
 PLAINTEXT_EXTS = {
     ".txt", ".md", ".rst", ".csv", ".tsv", ".log",
@@ -55,13 +66,15 @@ WHISPER_MODEL_SIZE = "base"
 # don't want to repeat that for every audio file in a batch.
 _whisper_model = None
 
-
-def _get_whisper_model():
-    global _whisper_model
-    if _whisper_model is None:
-        import whisper
-        _whisper_model = whisper.load_model(WHISPER_MODEL_SIZE)
-    return _whisper_model
+# PyTorch's CPU inference path is not safe to call concurrently from
+# multiple threads against the same model -- doing so causes thread
+# oversubscription in its native BLAS/OpenMP backend and can segfault the
+# whole process (this is exactly what happens if build_cache() is run with
+# workers > 1 and Whisper calls aren't serialized). This lock ensures only
+# one thread is ever inside model loading or transcribe() at a time;
+# other extractors are unaffected and still run fully concurrently.
+_whisper_lock = threading.Lock()
+_whisper_model = whisper.load_model(WHISPER_MODEL_SIZE)
 
 
 def extract_text(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
@@ -156,7 +169,6 @@ def _extract_plaintext(data: Union[bytes, Path, BinaryIO]) -> str:
 
 
 def _extract_image(data: Union[bytes, Path, BinaryIO]) -> str:
-    import pytesseract
 
     if isinstance(data, bytes):
         img = Image.open(io.BytesIO(data))
@@ -173,7 +185,6 @@ def _extract_image(data: Union[bytes, Path, BinaryIO]) -> str:
 
 def _extract_docx(data: Union[bytes, Path, BinaryIO]) -> str:
     """Extract text from a .docx: paragraphs, tables, and headers/footers."""
-    import docx
 
     doc = docx.Document(_as_file_like(data))
     pieces = []
@@ -199,7 +210,6 @@ def _extract_docx(data: Union[bytes, Path, BinaryIO]) -> str:
 
 def _extract_xlsx(data: Union[bytes, Path, BinaryIO]) -> str:
     """Extract text from .xlsx/.xlsm: every cell's value, sheet by sheet."""
-    import openpyxl
 
     wb = openpyxl.load_workbook(_as_file_like(data), data_only=True, read_only=True)
     pieces = []
@@ -222,7 +232,6 @@ def _extract_xlsx(data: Union[bytes, Path, BinaryIO]) -> str:
 def _extract_pptx(data: Union[bytes, Path, BinaryIO]) -> str:
     """Extract text from .pptx: all text frames and table cells, per slide,
     plus speaker notes."""
-    from pptx import Presentation
 
     prs = Presentation(_as_file_like(data))
     pieces = []
@@ -259,21 +268,55 @@ def _extract_audio(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
 
     Whisper's `transcribe()` shells out to ffmpeg internally and expects a
     real file path, so bytes/file-like input is written to a temp file
-    first (same pattern as PDF handling below).
+    first (same pattern as PDF handling below). The whole operation is
+    serialized via `_whisper_lock` -- see the comment above that lock for
+    why concurrent calls from multiple threads are unsafe.
     """
     audio_path, cleanup = _ensure_audio_path(filename, data)
     try:
-        model = _get_whisper_model()
-        result = model.transcribe(str(audio_path))
+        if not _has_audio_stream(audio_path):
+            return ""
+        with _whisper_lock:
+            result = _whisper_model.transcribe(str(audio_path))
         return result.get("text", "").strip()
-    except Exception as e:
-        print(f"Warning: failed to transcribe audio file {filename}: {e}")
     finally:
         if cleanup:
             try:
                 audio_path.unlink()
             except OSError:
                 pass
+
+
+def _has_audio_stream(audio_path: Path) -> bool:
+    """Use ffprobe to check the file actually decodes to a non-empty audio
+    stream. Whisper/ffmpeg can crash (not just raise) on files that are
+    corrupt, truncated, silent placeholders, or otherwise contain zero
+    audio samples -- catching that here avoids feeding garbage into
+    Whisper's native code at all."""
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=duration",
+                "-of", "csv=p=0",
+                str(audio_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+    output = result.stdout.strip()
+    if not output or output.lower() == "n/a":
+        return False
+    try:
+        return float(output) > 0
+    except ValueError:
+        return False
 
 
 def _ensure_audio_path(filename: str, data: Union[bytes, Path, BinaryIO]) -> tuple[Path, bool]:
@@ -328,7 +371,6 @@ def _ensure_pdf_path(data: Union[bytes, Path, BinaryIO]) -> tuple[Path, bool]:
 
 
 def _pdf_embedded_text(pdf_path: Path) -> str:
-    import pdfplumber
 
     pieces = []
     with pdfplumber.open(str(pdf_path)) as pdf:
@@ -341,12 +383,8 @@ def _pdf_embedded_text(pdf_path: Path) -> str:
 
 def _pdf_ocr(pdf_path: Path) -> str:
     # Requires the `poppler` system package (for pdf2image) and `tesseract`.
-    from pdf2image import convert_from_path
-    import pytesseract
-
     pieces = []
     try:
-        import pdfplumber
         with pdfplumber.open(str(pdf_path)) as pdf:
             num_pages = len(pdf.pages)
     except Exception:
