@@ -86,6 +86,9 @@ def build_cache(
     indexed_results = []
     interrupted = False
 
+    if verbose:
+        print("Starting indexing...")
+
     try:
         for entry in iter_entries(folder, cache_all=cache_all):
             seen.add(entry.virtual_path)
