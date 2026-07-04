@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 
-from cache import load_cache, build_cache
+from cache import iter_cache
 import sys
 import os
 
@@ -25,7 +25,7 @@ def _color(text: str, code: str, enabled: bool) -> str:
 
 
 def search_cache(folder: Path, term: str, context: int = 40) -> None:
-    cache = load_cache(folder)
+    cache = iter_cache(folder)
     if cache is None:
         print("No cache found. Exiting...")
         return
@@ -39,7 +39,7 @@ def search_cache(folder: Path, term: str, context: int = 40) -> None:
         return
     found_any = False
 
-    for vpath, entry in sorted(cache.get("files", {}).items()):
+    for vpath, entry in cache:
         vpath_str = str(vpath)
         file_match = pattern.search(vpath_str)
 

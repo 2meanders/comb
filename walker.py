@@ -19,7 +19,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator, BinaryIO, Union
 
-CACHE_FILENAME = ".comb_cache.json"
+CACHE_FILENAME = ".comb_cache.db"
+
+def _is_comb_file(path: Path) -> bool:
+    return path.is_file() and str(path).startswith(".comb_cache")
 
 # Directory names that should never be descended into (checked against any
 # path component, both on disk and inside zip archives).
@@ -77,7 +80,7 @@ def iter_entries(root: Path, cache_all: bool) -> Iterator[Entry]:
     for path in sorted(root.rglob("*")):
         if path.is_dir():
             continue
-        if path.name == CACHE_FILENAME:
+        if _is_comb_file(path):
             continue
 
         rel = str(path.relative_to(root))

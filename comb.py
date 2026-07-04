@@ -17,7 +17,7 @@ Search (auto-builds the cache the first time):
 import argparse
 from pathlib import Path
 
-from cache import build_cache, load_cache, clear_cache
+from cache import build_cache, cache_exists, clear_cache
 from search_engine import search_cache
 
 
@@ -94,7 +94,7 @@ def main():
 
     cache_newly_built = False
     try:
-        if load_cache(folder) is None:
+        if not cache_exists(folder):
             print("No cache found, building one first (this may take a while)...")
             build_cache(folder, verbose=args.verbose, workers=args.workers, cache_all=args.all)
             cache_newly_built = True
