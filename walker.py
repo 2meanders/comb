@@ -13,6 +13,7 @@ or, for nested archives:
 import fnmatch
 import io
 import shutil
+import tarfile
 import tempfile
 import zipfile
 from abc import ABC, abstractmethod
@@ -132,8 +133,97 @@ class ZipArchive(ArchiveFormat):
         return _ClosingReader(zf, zf.open(name))
 
 
+class TarArchive(ArchiveFormat):
+    # "r:*" auto-detects gzip/bz2/xz/no compression, so one class covers
+    # all of these; the suffixes are just listed for clarity/matching.
+    suffixes = (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")
+
+    def _open(self, source: Union[Path, BinaryIO]) -> tarfile.TarFile:
+        if isinstance(source, Path):
+            return tarfile.open(source, "r:*")
+        source.seek(0)
+        return tarfile.open(fileobj=source, mode="r:*")
+
+    def list_members(self, source):
+        with self._open(source) as tf:
+            return [(m.name, m.size) for m in tf.getmembers() if m.isfile()]
+
+    def open_member(self, source, name):
+        tf = self._open(source)
+        member_stream = tf.extractfile(name)
+        if member_stream is None:
+            # Shouldn't happen for a regular file (isfile() was already
+            # checked in list_members), but guards against a malformed
+            # archive or a symlink/device slipping through.
+            tf.close()
+            raise ValueError(f"tar member is not a readable regular file: {name}")
+        return _ClosingReader(tf, member_stream)
+
+
+# Optional formats that need a third-party library are only registered if
+# that library is importable, so comb.py still works without every
+# optional dependency installed -- an archive of that type just won't be
+# descended into (it'll be treated as an unknown/binary file instead).
+_OPTIONAL_FORMATS: list[ArchiveFormat] = []
+
+try:
+    import py7zr
+
+    class SevenZipArchive(ArchiveFormat):
+        suffixes = (".7z",)
+
+        def list_members(self, source):
+            if not isinstance(source, Path):
+                source.seek(0)
+            with py7zr.SevenZipFile(source, "r") as zf:
+                return [
+                    (info.filename, info.uncompressed)
+                    for info in zf.list()
+                    if not info.is_directory
+                ]
+
+        def open_member(self, source, name):
+            # py7zr has no per-member lazy-reopen API like zip/tar/rarfile
+            # do, so this reads the member fully into memory immediately.
+            # Fine for typical file sizes; a very large single member
+            # inside a 7z would be read eagerly rather than streamed.
+            if not isinstance(source, Path):
+                source.seek(0)
+            with py7zr.SevenZipFile(source, "r") as zf:
+                data = zf.read([name])[name].read()
+            return io.BytesIO(data)
+
+    _OPTIONAL_FORMATS.append(SevenZipArchive())
+except ImportError:
+    pass
+
+try:
+    import rarfile
+
+    class RarArchive(ArchiveFormat):
+        suffixes = (".rar",)
+
+        def _open(self, source: Union[Path, BinaryIO]) -> "rarfile.RarFile":
+            if isinstance(source, Path):
+                return rarfile.RarFile(source, "r")
+            source.seek(0)
+            return rarfile.RarFile(source, "r")
+
+        def list_members(self, source):
+            with self._open(source) as rf:
+                return [(i.filename, i.file_size) for i in rf.infolist() if not i.is_dir()]
+
+        def open_member(self, source, name):
+            rf = self._open(source)
+            return _ClosingReader(rf, rf.open(name))
+
+    _OPTIONAL_FORMATS.append(RarArchive())
+except ImportError:
+    pass
+
+
 ARCHIVE_FORMATS: dict[str, ArchiveFormat] = {}
-for _fmt in (ZipArchive(),):
+for _fmt in (ZipArchive(), TarArchive(), *_OPTIONAL_FORMATS):
     for _suffix in _fmt.suffixes:
         ARCHIVE_FORMATS[_suffix] = _fmt
 
