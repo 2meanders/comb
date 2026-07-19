@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from walker import iter_entries, CACHE_FILENAME
+from walker import iter_entries, INDEX_FILENAME
 from extractors import extract_text
 
 
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS meta (
 # ── connection ────────────────────────────────────────────────────────────────
 
 def _cache_path(folder: Path) -> Path:
-    return Path(folder) / CACHE_FILENAME
+    return Path(folder) / INDEX_FILENAME
 
 
 @contextmanager
@@ -67,7 +67,7 @@ def _connect(folder: Path):
 # ── public cache API ──────────────────────────────────────────────────────────
 
 
-def iter_cache(folder: Path) -> Iterator[tuple[str, dict]] | None:
+def iter_index(folder: Path) -> Iterator[tuple[str, dict]] | None:
     """Yield (virtual_path, meta) pairs one at a time from the cache.
     
     Returns None if the cache doesn't exist, so callers can distinguish
@@ -114,7 +114,7 @@ def save_cache(folder: Path, cache: dict) -> None:
         con.commit()
 
 
-def clear_cache(folder: Path) -> bool:
+def clear_index(folder: Path) -> bool:
     """Delete the cache DB for `folder`."""
     p = _cache_path(folder)
     if p.exists():
@@ -165,12 +165,12 @@ def _flush(con: sqlite3.Connection, results: list[dict]) -> None:
 
 
 
-def build_cache(
+def build_index(
     folder: Path,
     force: bool = False,
     verbose: bool = True,
     workers: int = 1,
-    cache_all: bool = False,
+    index_all: bool = False,
 ) -> None:
     """(Re)build the cache for `folder`.
 
@@ -197,7 +197,7 @@ def build_cache(
         count_removed = 0
         pending = []
 
-        for entry in iter_entries(folder, cache_all=cache_all):
+        for entry in iter_entries(folder, index_all=index_all):
             seen.add(entry.virtual_path)
             prev = existing.get(entry.virtual_path)
             if prev and prev[0] == entry.mtime and prev[1] == entry.size:
@@ -271,6 +271,6 @@ def build_cache(
             )
             print(msg)
 
-def cache_exists(folder: Path) -> bool:
+def index_exists(folder: Path) -> bool:
     """Return True if a cache exists for `folder`."""
     return _cache_path(folder).exists()

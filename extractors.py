@@ -48,7 +48,7 @@ PPTX_EXTS = {".pptx"}
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac", ".wma", ".opus"}
 
 # Email messages. Only the message itself (headers + body) is handled
-# here -- attachments are walked and extracted as their own cache entries
+# here -- attachments are walked and extracted as their own index entries
 # by walker.py's EmlAttachments container, so an attached .pdf/.docx/.zip/
 # even another .eml gets the normal extension-based extraction rather than
 # being dumped as an opaque blob into the parent message's text.
@@ -74,7 +74,7 @@ def _get_whisper_model():
 # PyTorch's CPU inference path is not safe to call concurrently from
 # multiple threads against the same model -- doing so causes thread
 # oversubscription in its native BLAS/OpenMP backend and can segfault the
-# whole process (this is exactly what happens if build_cache() is run with
+# whole process (this is exactly what happens if build_index() is run with
 # workers > 1 and Whisper calls aren't serialized). This lock ensures only
 # one thread is ever inside model loading or transcribe() at a time;
 # other extractors are unaffected and still run fully concurrently.
@@ -84,7 +84,7 @@ _whisper_lock = threading.Lock()
 def extract_text(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
     """Dispatch to the right extractor based on file extension.
     Never raises -- returns "" on any failure so a single bad file
-    can't abort the whole cache build."""
+    can't abort the whole index build."""
     ext = os.path.splitext(filename)[1].lower()
     try:
         if ext in PLAINTEXT_EXTS:

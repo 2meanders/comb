@@ -29,11 +29,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator, BinaryIO, Optional, Union
 
-CACHE_FILENAME = ".comb_cache.db"
+INDEX_FILENAME = ".comb_index.db"
 
 
 def _is_comb_file(path: Path) -> bool:
-    return path.is_file() and str(path).startswith(".comb_cache")
+    return path.is_file() and str(path).startswith(".comb_index")
 
 
 # Directory names that should never be descended into (checked against any
@@ -289,7 +289,7 @@ class EmlAttachments(ArchiveFormat):
                 filename = f"attachment-{unnamed_count}"
 
             # Disambiguate duplicate attachment names (e.g. several
-            # "image.png" inline images) so they don't collide as cache
+            # "image.png" inline images) so they don't collide as index
             # keys -- only the virtual_path changes, not the real filename
             # used for extension-based extraction.
             seen[filename] = seen.get(filename, 0) + 1
@@ -328,7 +328,7 @@ def _container_format_for(filename: str) -> Optional[ArchiveFormat]:
 
 # ── walking ──────────────────────────────────────────────────────────────────
 
-def iter_entries(root: Path, cache_all: bool) -> Iterator[Entry]:
+def iter_entries(root: Path, index_all: bool) -> Iterator[Entry]:
     """Walk `root` on disk, yielding an Entry for every real file, every
     file found inside (possibly nested) archives, and every attachment
     found inside (possibly nested) .eml messages."""
@@ -340,7 +340,7 @@ def iter_entries(root: Path, cache_all: bool) -> Iterator[Entry]:
             continue
 
         rel = str(path.relative_to(root))
-        if not cache_all and _is_ignored_path(rel):
+        if not index_all and _is_ignored_path(rel):
             continue
 
         stat = path.stat()
@@ -349,7 +349,7 @@ def iter_entries(root: Path, cache_all: bool) -> Iterator[Entry]:
             name=path.name,
             mtime=stat.st_mtime,
             size=stat.st_size,
-            cache_all=cache_all,
+            index_all=index_all,
             self_data_func=_make_disk_reader(path),
             # Disk files are cheap to "reopen" -- just reuse the Path, no
             # need to read anything unless recursion actually happens.
@@ -383,7 +383,7 @@ def _handle_source(
     name: str,
     mtime: float,
     size: int,
-    cache_all: bool,
+    index_all: bool,
     self_data_func: Callable[[], Union[bytes, Path, BinaryIO]],
     open_for_recursion: Callable[[], Union[Path, BinaryIO]],
 ) -> Iterator[Entry]:
@@ -414,7 +414,7 @@ def _handle_source(
         recursion_source = open_for_recursion()
     except Exception:
         return
-    yield from _iter_archive(vpath, fmt, recursion_source, mtime, cache_all)
+    yield from _iter_archive(vpath, fmt, recursion_source, mtime, index_all)
 
 
 def _iter_archive(
@@ -422,7 +422,7 @@ def _iter_archive(
     fmt: ArchiveFormat,
     source: Union[Path, BinaryIO],
     mtime: float,
-    cache_all: bool,
+    index_all: bool,
 ) -> Iterator[Entry]:
     """Yield an Entry for every member found in `source` via `fmt`,
     recursing into any nested archives/containers found inside it.
@@ -434,7 +434,7 @@ def _iter_archive(
         return
 
     for name, size in members:
-        if not cache_all and _is_ignored_path(name):
+        if not index_all and _is_ignored_path(name):
             continue
 
         vpath = f"{prefix}:{name}"
@@ -443,7 +443,7 @@ def _iter_archive(
             name=name,
             mtime=mtime,            # inherit the outer archive's mtime
             size=size,
-            cache_all=cache_all,
+            index_all=index_all,
             self_data_func=_make_member_reader(fmt, source, name),
             open_for_recursion=lambda fmt=fmt, source=source, name=name, size=size: (
                 _materialize_member(fmt, source, name, size)
@@ -463,7 +463,7 @@ def _materialize_member(
     NOTE: the returned buffer is intentionally not closed by the caller.
     Entries yielded from recursing into it hold a lazy reference (their
     data_func reopens it on demand, possibly much later during extraction
-    -- see cache.py, which fully drains iter_entries into a list before any
+    -- see index.py, which fully drains iter_entries into a list before any
     data_func is called), so closing it right after this function returns
     would leave those entries pointing at a closed buffer. It's released
     by garbage collection once nothing references it anymore.

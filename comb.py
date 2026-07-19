@@ -5,10 +5,10 @@ comb.py
 
 Archive search tool.
 
-Build a cache:
+Build an index:
     python3 comb.py --build [--folder PATH] [--force]
 
-Search (auto-builds the cache the first time):
+Search (auto-builds the index the first time):
     python3 comb.py searchterm
     python3 comb.py searchterm --folder /path/to/archive
 
@@ -17,45 +17,45 @@ Search (auto-builds the cache the first time):
 import argparse
 from pathlib import Path
 
-from cache import build_cache, cache_exists, clear_cache
-from search_engine import search_cache
+from index import build_index, index_exists, clear_index
+from search_engine import search_index
 
 
-def _clear_cache(folder: Path, verbose: bool):
-    cleared = clear_cache(folder)
+def _clear_index(folder: Path, verbose: bool):
+    cleared = clear_index(folder)
     if verbose:
         if cleared:
-            print("Cache cleared.")
+            print("Index cleared.")
         else:
-            print("No cache to clear.")
+            print("No index to clear.")
 
 
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Searches the archive with the help of a cache."
+            "Searches the archive with the help of an index."
         )
     )
     parser.add_argument("term", nargs="?", help="Term to search for")
     parser.add_argument(
         "--build", action="store_true",
-        help="(Re)build the cache instead of searching",
+        help="(Re)build the index instead of searching",
     )
     parser.add_argument(
         "--force", action="store_true",
-        help="Force a full rebuild, ignoring existing cache entries",
+        help="Force a full rebuild, ignoring existing index entries",
     )
     parser.add_argument(
         "--context", "-c", type=int, default=40,
         help="Characters of context to show around each match (default: 40)",
     )
     parser.add_argument(
-        "--no-update", action="store_true",
-        help="Do not update the cache before searching (useful if you know the cache is up to date)",
+        "-i", "--no-update", action="store_true",
+        help="Do not update the index before searching (useful if you know the index is up to date)",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
-        help="Show verbose output during cache building",
+        help="Show verbose output during indexing",
     )
     parser.add_argument(
         "--folder", "-f", type=str, default=".",
@@ -63,11 +63,11 @@ def main():
     )
     parser.add_argument(
         "--clear", action="store_true",
-        help="If used on its own, it will clear the cache if present. If used with a search term, it will clear the cache after searching.",
+        help="If used on its own, it will clear the index if present. If used with a search term, it will clear the index after searching.",
     )
     parser.add_argument(
         "--workers", type=int, default=1,
-        help="Number of worker threads to use while building the cache (default: 1)",
+        help="Number of worker threads to use while indexing (default: 1)",
     )
     parser.add_argument(
         "-a", "--all", action="store_true",
@@ -80,51 +80,51 @@ def main():
 
     if args.build:
         try:
-            build_cache(folder, force=args.force, verbose=args.verbose, workers=args.workers, cache_all=args.all)
+            build_index(folder, force=args.force, verbose=args.verbose, workers=args.workers, index_all=args.all)
         except KeyboardInterrupt:
-            print("\nBuild interrupted by user. Saving partial cache.")
+            print("\nBuild interrupted by user. Saving partial index.")
         return
     
     if args.clear and not args.term:
-        _clear_cache(folder, verbose=args.verbose)
+        _clear_index(folder, verbose=args.verbose)
         return
 
     if not args.term:
         parser.error("a search term is required unless --build or --clear is given")
 
-    cache_newly_built = False
+    index_newly_built = False
     try:
-        if not cache_exists(folder):
-            print("No cache found, building one first (this may take a while)...")
-            build_cache(folder, verbose=args.verbose, workers=args.workers, cache_all=args.all)
-            cache_newly_built = True
+        if not index_exists(folder):
+            print("No index found, building one first (this may take a while)...")
+            build_index(folder, verbose=args.verbose, workers=args.workers, index_all=args.all)
+            index_newly_built = True
     except KeyboardInterrupt:
-        print("\nCache loading interrupted by user. Exiting.")
+        print("\nIndex loading interrupted by user. Exiting.")
         if args.clear:
-            _clear_cache(folder, verbose=args.verbose)
+            _clear_index(folder, verbose=args.verbose)
         return
     
     try:
-        if not args.no_update and not cache_newly_built:
-            print("Updating cache...")
-            build_cache(folder, verbose=args.verbose, workers=args.workers, cache_all=args.all)
+        if not args.no_update and not index_newly_built:
+            print("Updating index...")
+            build_index(folder, verbose=args.verbose, workers=args.workers, index_all=args.all)
             print("Searching...")
     except KeyboardInterrupt:
-        print("\nCache update interrupted by user. Exiting.")
+        print("\nIndex update interrupted by user. Exiting.")
         if args.clear:
-            _clear_cache(folder, verbose=args.verbose)
+            _clear_index(folder, verbose=args.verbose)
         return
     
     try:
-        search_cache(folder, args.term, context=args.context)
+        search_index(folder, args.term, context=args.context)
     except KeyboardInterrupt:
         print("\nSearch interrupted by user. Exiting.")
         if args.clear:
-            _clear_cache(folder, verbose=args.verbose)
+            _clear_index(folder, verbose=args.verbose)
         return
     
     if args.clear:
-        _clear_cache(folder, verbose=args.verbose)
+        _clear_index(folder, verbose=args.verbose)
 
 
 if __name__ == "__main__":

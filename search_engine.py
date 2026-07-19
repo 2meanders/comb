@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 
-from cache import iter_cache
+from index import iter_index
 import sys
 import os
 
@@ -24,10 +24,10 @@ def _color(text: str, code: str, enabled: bool) -> str:
     return f"\x1b[{code}m{text}\x1b[0m"
 
 
-def search_cache(folder: Path, term: str, context: int = 40) -> None:
-    cache = iter_cache(folder)
-    if cache is None:
-        print("No cache found. Exiting...")
+def search_index(folder: Path, term: str, context: int = 40) -> None:
+    index = iter_index(folder)
+    if index is None:
+        print("No index found. Exiting...")
         return
     
     color_enabled = _supports_color()
@@ -39,7 +39,7 @@ def search_cache(folder: Path, term: str, context: int = 40) -> None:
         return
     found_any = False
 
-    for vpath, entry in cache:
+    for vpath, entry in index:
         vpath_str = str(vpath)
         file_match = pattern.search(vpath_str)
 
