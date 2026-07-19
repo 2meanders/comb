@@ -47,6 +47,13 @@ PPTX_EXTS = {".pptx"}
 # and on PATH -- whisper shells out to it to decode/resample audio.
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac", ".wma", ".opus"}
 
+# Email messages. Only the message itself (headers + body) is handled
+# here -- attachments are walked and extracted as their own cache entries
+# by walker.py's EmlAttachments container, so an attached .pdf/.docx/.zip/
+# even another .eml gets the normal extension-based extraction rather than
+# being dumped as an opaque blob into the parent message's text.
+EML_EXTS = {".eml"}
+
 # Whisper model size used for transcription. "base" is a reasonable
 # speed/accuracy default; swap for "tiny"/"small"/"medium"/"large" as needed.
 WHISPER_MODEL_SIZE = "base"
@@ -94,6 +101,8 @@ def extract_text(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
             return _extract_pptx(data)
         elif ext in AUDIO_EXTS:
             return _extract_audio(filename, data)
+        elif ext in EML_EXTS:
+            return _extract_eml(data)
         else:
             # Unknown/missing extension: sniff the content instead of
             # guessing blind. If it looks like text, treat it as plaintext;
@@ -262,6 +271,47 @@ def _extract_pptx(data: Union[bytes, Path, BinaryIO]) -> str:
             pieces.extend(slide_lines)
 
     return "\n".join(pieces)
+
+
+def _extract_eml(data: Union[bytes, Path, BinaryIO]) -> str:
+    """Extract headers + body text from an .eml file. Deliberately doesn't
+    touch attachments -- see the EML_EXTS comment above for why."""
+    from email import policy
+    from email.parser import BytesParser
+
+    raw_bytes = _read_bytes(data)
+    msg = BytesParser(policy=policy.default).parsebytes(raw_bytes)
+
+    pieces = []
+    for header in ("From", "To", "Cc", "Subject", "Date"):
+        value = msg.get(header)
+        if value:
+            pieces.append(f"{header}: {value}")
+
+    body_part = msg.get_body(preferencelist=("plain", "html"))
+    if body_part is not None:
+        try:
+            content = body_part.get_content()
+        except Exception:
+            content = ""
+        if content and body_part.get_content_type() == "text/html":
+            content = _strip_html(content)
+        if content:
+            pieces.append(content.strip())
+
+    return "\n".join(pieces)
+
+
+def _strip_html(raw_html: str) -> str:
+    """Small HTML-to-text fallback for HTML-only email bodies -- doesn't
+    need a full HTML parser dependency for something this simple."""
+    import html
+    import re
+
+    text = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", raw_html)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _extract_audio(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
