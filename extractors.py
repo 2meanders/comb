@@ -24,10 +24,33 @@ from PIL import Image
 from pillow_heif import register_heif_opener
 
 PLAINTEXT_EXTS = {
-    ".txt", ".md", ".rst", ".csv", ".tsv", ".log",
-    ".json", ".xml", ".html", ".htm", ".yaml", ".yml", ".ini", ".cfg",
-    ".py", ".js", ".ts", ".java", ".c", ".h", ".cpp", ".cs", ".go",
-    ".rb", ".sh", ".bat", ".sql",
+    ".txt",
+    ".md",
+    ".rst",
+    ".csv",
+    ".tsv",
+    ".log",
+    ".json",
+    ".xml",
+    ".html",
+    ".htm",
+    ".yaml",
+    ".yml",
+    ".ini",
+    ".cfg",
+    ".py",
+    ".js",
+    ".ts",
+    ".java",
+    ".c",
+    ".h",
+    ".cpp",
+    ".cs",
+    ".go",
+    ".rb",
+    ".sh",
+    ".bat",
+    ".sql",
 }
 
 
@@ -68,8 +91,10 @@ def _get_whisper_model():
     global _whisper_model
     if _whisper_model is None:
         import whisper
+
         _whisper_model = whisper.load_model(WHISPER_MODEL_SIZE)
     return _whisper_model
+
 
 # PyTorch's CPU inference path is not safe to call concurrently from
 # multiple threads against the same model -- doing so causes thread
@@ -327,12 +352,12 @@ def _extract_audio(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
     try:
         if not _has_audio_stream(audio_path):
             return ""
-        
+
         model = _get_whisper_model()
-        
+
         with _whisper_lock:
             result = model.transcribe(str(audio_path))
-        
+
         return result.get("text", "").strip()
     except Exception as e:
         print(f"Warning: failed to transcribe audio file {filename}: {e}")
@@ -350,16 +375,21 @@ def _has_audio_stream(audio_path: Path) -> bool:
     corrupt, truncated, silent placeholders, or otherwise contain zero
     audio samples -- catching that here avoids feeding garbage into
     Whisper's native code at all."""
-     
+
     import subprocess
 
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "error",
-                "-select_streams", "a:0",
-                "-show_entries", "stream=duration",
-                "-of", "csv=p=0",
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=duration",
+                "-of",
+                "csv=p=0",
                 str(audio_path),
             ],
             capture_output=True,
@@ -378,7 +408,9 @@ def _has_audio_stream(audio_path: Path) -> bool:
         return False
 
 
-def _ensure_audio_path(filename: str, data: Union[bytes, Path, BinaryIO]) -> tuple[Path, bool]:
+def _ensure_audio_path(
+    filename: str, data: Union[bytes, Path, BinaryIO]
+) -> tuple[Path, bool]:
     if isinstance(data, Path):
         return data, False
 
@@ -401,10 +433,9 @@ def _ensure_audio_path(filename: str, data: Union[bytes, Path, BinaryIO]) -> tup
 def _extract_pdf(data: Union[bytes, Path, BinaryIO]) -> str:
     pdf_path, cleanup = _ensure_pdf_path(data)
     try:
-        text = _pdf_embedded_text(pdf_path)
-        if text.strip():
-            return text
-        return _pdf_ocr(pdf_path)
+        embedded = _pdf_embedded_text(pdf_path)
+        ocr = _pdf_ocr(pdf_path)
+        return "\n".join(p for p in (embedded.strip(), ocr.strip()) if p)
     finally:
         if cleanup:
             try:
@@ -442,31 +473,33 @@ def _pdf_embedded_text(pdf_path: Path) -> str:
 
 
 def _pdf_ocr(pdf_path: Path) -> str:
-    # Requires the `poppler` system package (for pdf2image) and `tesseract`.
-    from pdf2image import convert_from_path
+    # Requires PyMuPDF (`pip install pymupdf`, imported as `fitz`).
+    import fitz
     import pytesseract
 
-    pieces = []
     try:
-        import pdfplumber
-        with pdfplumber.open(str(pdf_path)) as pdf:
-            num_pages = len(pdf.pages)
+        doc = fitz.open(str(pdf_path))
     except Exception:
         return ""
 
-    for page_number in range(1, num_pages + 1):
-        try:
-            imgs = convert_from_path(
-                str(pdf_path),
-                first_page=page_number,
-                last_page=page_number,
-            )
-        except Exception:
-            continue
-        if not imgs:
-            continue
-        try:
-            pieces.append(pytesseract.image_to_string(imgs[0]))
-        finally:
-            imgs[0].close()
+    pieces = []
+    seen_xrefs = set()  # dedupe images reused across pages (e.g. a logo)
+    try:
+        for page in doc:
+            for xref, *_ in page.get_images(full=True):
+                if xref in seen_xrefs:
+                    continue
+                seen_xrefs.add(xref)
+                try:
+                    img_bytes = doc.extract_image(xref)["image"]
+                    img = Image.open(io.BytesIO(img_bytes))
+                except Exception:
+                    continue
+                try:
+                    pieces.append(pytesseract.image_to_string(img))
+                finally:
+                    img.close()
+    finally:
+        doc.close()
+
     return "\n".join(pieces).strip()
