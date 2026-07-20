@@ -6,6 +6,7 @@ Schema:
     meta        -- key/value store for cache-wide metadata (built_at, etc.)
 
 """
+
 import re
 import sqlite3
 import time
@@ -17,8 +18,7 @@ from typing import Iterator
 from walker import iter_entries, INDEX_FILENAME
 from extractors import extract_text
 
-
-FLUSH_EVERY = 50       # rows flushed to DB per batch during build
+FLUSH_EVERY = 50  # rows flushed to DB per batch during build
 MAX_TEXT_CHARS = 6_000_000  # truncate extracted text beyond this
 
 _DDL = """
@@ -26,8 +26,7 @@ CREATE TABLE IF NOT EXISTS files (
     virtual_path  TEXT PRIMARY KEY,
     mtime         REAL NOT NULL,
     size          INTEGER NOT NULL,
-    text          TEXT NOT NULL DEFAULT '',
-    indexed_at    REAL NOT NULL
+    text          TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -37,6 +36,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 
 # ── connection ────────────────────────────────────────────────────────────────
+
 
 def _cache_path(folder: Path) -> Path:
     return Path(folder) / INDEX_FILENAME
@@ -55,7 +55,8 @@ def _connect(folder: Path):
         # they want; the search() function below uses Python-side filtering
         # instead, but having it in SQL is occasionally handy for debugging.
         con.create_function(
-            "REGEXP", 2,
+            "REGEXP",
+            2,
             lambda pattern, s: bool(re.search(pattern, s or "")),
             deterministic=True,
         )
@@ -69,10 +70,10 @@ def _connect(folder: Path):
 
 def iter_index(folder: Path) -> Iterator[tuple[str, dict]] | None:
     """Yield (virtual_path, meta) pairs one at a time from the cache.
-    
+
     Returns None if the cache doesn't exist, so callers can distinguish
     "no cache" from "empty cache":
-    
+
         entries = iter_cache(folder)
         if entries is None:
             rebuild()
@@ -103,11 +104,10 @@ def iter_index(folder: Path) -> Iterator[tuple[str, dict]] | None:
 def save_cache(folder: Path, cache: dict) -> None:
     """Bulk-write a plain dict into the DB. Useful for one-off migrations."""
     with _connect(folder) as con:
-        now = time.time()
         con.executemany(
-            "INSERT OR REPLACE INTO files (virtual_path, mtime, size, text, indexed_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO files (virtual_path, mtime, size, text) VALUES (?, ?, ?, ?)",
             [
-                (path, meta["mtime"], meta["size"], meta.get("text", ""), now)
+                (path, meta["mtime"], meta["size"], meta.get("text", ""))
                 for path, meta in cache.get("files", {}).items()
             ],
         )
@@ -124,6 +124,7 @@ def clear_index(folder: Path) -> bool:
 
 
 # ── build internals ───────────────────────────────────────────────────────────
+
 
 def _index_entry(entry, verbose: bool) -> dict:
     try:
@@ -155,14 +156,12 @@ def _flush(con: sqlite3.Connection, results: list[dict]) -> None:
     successful build_cache() so we don't pay the rebuild cost per batch."""
     if not results:
         return
-    now = time.time()
     con.executemany(
-        "INSERT OR REPLACE INTO files (virtual_path, mtime, size, text, indexed_at) VALUES (?, ?, ?, ?, ?)",
-        [(r["virtual_path"], r["mtime"], r["size"], r["text"], now) for r in results],
+        "INSERT OR REPLACE INTO files (virtual_path, mtime, size, text) VALUES (?, ?, ?, ?)",
+        [(r["virtual_path"], r["mtime"], r["size"], r["text"]) for r in results],
     )
     con.commit()
     results.clear()
-
 
 
 def build_index(
@@ -261,7 +260,6 @@ def build_index(
                 )
                 con.commit()
 
-
         total = con.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         if verbose:
             msg = (
@@ -270,6 +268,7 @@ def build_index(
                 + f". Total cached files: {total}."
             )
             print(msg)
+
 
 def index_exists(folder: Path) -> bool:
     """Return True if a cache exists for `folder`."""
