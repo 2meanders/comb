@@ -137,11 +137,19 @@ def search_index(
     folder: Path, term: str, context: int = 40, mode: str = "auto"
 ) -> None:
     color_enabled = _supports_color()
-    use_regex = mode == "regex" or (mode == "auto" and looks_like_regex(term))
+    
+    if mode not in ("auto", "fts", "regex"):
+        print(f"Search mode '{mode}' not valid. Falling back to auto.")
+        mode = "auto"
 
-    if use_regex:
+    if mode == "auto":
+        if looks_like_regex(term):
+            _search_regex(folder, term, context, color_enabled)
+        else:
+            _search_fts(folder, term, color_enabled)
+    elif mode == "regex":
         _search_regex(folder, term, context, color_enabled)
-    else:
+    elif mode == "fts":
         _search_fts(folder, term, color_enabled)
 
 

@@ -100,7 +100,7 @@ def cmd_search(args):
 
     with interruptible("Search interrupted by user. Exiting.", folder, args):
         print("Searching...")
-        search_index(folder, args.term, context=args.context)
+        search_index(folder, args.term, context=args.context, mode=args.mode)
 
     if args.clear:
         _clear_index(folder, verbose=args.verbose)
@@ -208,6 +208,13 @@ def build_parser():
         "--clear",
         action="store_true",
         help="Delete the index after this search completes",
+    )
+    p_search.add_argument(
+        "-m",
+        "--mode",
+        choices=["auto", "fts", "regex"],
+        default="auto",
+        help="The search mode. Can be either SQLite's FTS5, regex or comb can try to find the best mode.",
     )
     p_search.set_defaults(func=cmd_search)
 
