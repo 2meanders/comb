@@ -214,7 +214,7 @@ def build_parser():
         "--mode",
         choices=["auto", "fts", "regex"],
         default="auto",
-        help="The search mode. Can be either SQLite's FTS5, regex or comb can try to find the best mode.",
+        help="The search mode. Can be either fts for SQLite's FTS5, regex for regex or auto if comb should try to find the best mode.",
     )
     p_search.set_defaults(func=cmd_search)
 

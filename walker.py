@@ -29,19 +29,37 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator, BinaryIO, Optional, Union
 
-INDEX_FILENAME = ".comb_index.db"
+INDEX_FILENAME = ".combed"
 
 
 def _is_comb_file(path: Path) -> bool:
-    return path.is_file() and str(path).startswith(".comb_index")
+    return path.is_file() and path.name in (
+        INDEX_FILENAME,
+        f"{INDEX_FILENAME}-shm",
+        f"{INDEX_FILENAME}-wal",
+    )
 
 
 # Directory names that should never be descended into (checked against any
 # path component, both on disk and inside archives).
 IGNORED_DIR_NAMES = {
-    ".git", ".svn", ".hg", ".idea", ".vscode",
-    "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache",
-    ".tox", ".venv", "venv", "env", "dist", "build", ".next", ".cache",
+    ".git",
+    ".svn",
+    ".hg",
+    ".idea",
+    ".vscode",
+    "node_modules",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".tox",
+    ".venv",
+    "venv",
+    "env",
+    "dist",
+    "build",
+    ".next",
+    ".cache",
 }
 
 # Filename glob patterns to skip, regardless of which directory they're in.
@@ -79,9 +97,9 @@ def _is_ignored_path(rel_path: str) -> bool:
 
 @dataclass
 class Entry:
-    virtual_path: str          # path used as the index key / display path
-    mtime: float                # modification time, used to detect changes
-    size: int                   # size in bytes, used to detect changes
+    virtual_path: str  # path used as the index key / display path
+    mtime: float  # modification time, used to detect changes
+    size: int  # size in bytes, used to detect changes
     data_func: Callable[[], Union[bytes, Path, BinaryIO]]
 
 
@@ -95,6 +113,7 @@ class Entry:
 # To support a new archive type (tar, 7z, ...), write one class implementing
 # this interface and add an instance to ARCHIVE_FORMATS -- the recursive
 # walk/nesting logic below is generic and doesn't need to change.
+
 
 class ArchiveFormat(ABC):
     suffixes: tuple[str, ...] = ()
@@ -219,7 +238,9 @@ try:
 
         def list_members(self, source):
             with self._open(source) as rf:
-                return [(i.filename, i.file_size) for i in rf.infolist() if not i.is_dir()]
+                return [
+                    (i.filename, i.file_size) for i in rf.infolist() if not i.is_dir()
+                ]
 
         def open_member(self, source, name):
             rf = self._open(source)
@@ -253,6 +274,7 @@ def _archive_format_for(filename: str) -> Optional[ArchiveFormat]:
 # its attachments as members. See _handle_source below for how the two
 # registries differ in practice.
 
+
 class EmlAttachments(ArchiveFormat):
     """Treats an .eml's attachments as archive members, so they get
     listed/extracted/recursed exactly like real archive contents (an
@@ -260,6 +282,7 @@ class EmlAttachments(ArchiveFormat):
     message's own subject/body text is handled separately, by
     extractors.py's eml extractor -- this class only concerns itself with
     what's attached."""
+
     suffixes = (".eml",)
 
     def _read_source_bytes(self, source: Union[Path, BinaryIO]) -> bytes:
@@ -272,7 +295,9 @@ class EmlAttachments(ArchiveFormat):
         from email import policy
         from email.parser import BytesParser
 
-        msg = BytesParser(policy=policy.default).parsebytes(self._read_source_bytes(source))
+        msg = BytesParser(policy=policy.default).parsebytes(
+            self._read_source_bytes(source)
+        )
 
         seen: dict[str, int] = {}
         results = []
@@ -295,7 +320,11 @@ class EmlAttachments(ArchiveFormat):
             seen[filename] = seen.get(filename, 0) + 1
             if seen[filename] > 1:
                 stem, dot, ext = filename.rpartition(".")
-                filename = f"{stem}-{seen[filename]}.{ext}" if dot else f"{filename}-{seen[filename]}"
+                filename = (
+                    f"{stem}-{seen[filename]}.{ext}"
+                    if dot
+                    else f"{filename}-{seen[filename]}"
+                )
 
             payload = part.get_payload(decode=True) or b""
             results.append((filename, payload))
@@ -327,6 +356,7 @@ def _container_format_for(filename: str) -> Optional[ArchiveFormat]:
 
 
 # ── walking ──────────────────────────────────────────────────────────────────
+
 
 def iter_entries(root: Path, index_all: bool) -> Iterator[Entry]:
     """Walk `root` on disk, yielding an Entry for every real file, every
@@ -360,6 +390,7 @@ def iter_entries(root: Path, index_all: bool) -> Iterator[Entry]:
 def _make_disk_reader(path: Path) -> Callable[[], Path]:
     def _read() -> Path:
         return path
+
     return _read
 
 
@@ -368,6 +399,7 @@ def _make_member_reader(
 ) -> Callable[[], BinaryIO]:
     def _read() -> BinaryIO:
         return fmt.open_member(source, name)
+
     return _read
 
 
@@ -404,7 +436,9 @@ def _handle_source(
     container_fmt = None if archive_fmt is not None else _container_format_for(name)
 
     if archive_fmt is None:
-        yield Entry(virtual_path=vpath, mtime=mtime, size=size, data_func=self_data_func)
+        yield Entry(
+            virtual_path=vpath, mtime=mtime, size=size, data_func=self_data_func
+        )
 
     fmt = archive_fmt or container_fmt
     if fmt is None:
@@ -441,7 +475,7 @@ def _iter_archive(
         yield from _handle_source(
             vpath=vpath,
             name=name,
-            mtime=mtime,            # inherit the outer archive's mtime
+            mtime=mtime,  # inherit the outer archive's mtime
             size=size,
             index_all=index_all,
             self_data_func=_make_member_reader(fmt, source, name),

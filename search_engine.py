@@ -137,7 +137,7 @@ def search_index(
     folder: Path, term: str, context: int = 40, mode: str = "auto"
 ) -> None:
     color_enabled = _supports_color()
-    
+
     if mode not in ("auto", "fts", "regex"):
         print(f"Search mode '{mode}' not valid. Falling back to auto.")
         mode = "auto"
@@ -146,11 +146,19 @@ def search_index(
         if looks_like_regex(term):
             _search_regex(folder, term, context, color_enabled)
         else:
-            _search_fts(folder, term, color_enabled)
+            try:
+                _search_fts(folder, term, color_enabled)
+            except sqlite3.OperationalError:
+                _search_regex(folder, term, context, color_enabled)
     elif mode == "regex":
         _search_regex(folder, term, context, color_enabled)
     elif mode == "fts":
-        _search_fts(folder, term, color_enabled)
+        try:
+            _search_fts(folder, term, color_enabled)
+        except sqlite3.OperationalError as e:
+            # Bad FTS5 syntax (e.g. an unmatched quote/paren) -- fall back to regex
+            # rather than surfacing a raw sqlite error to the user.
+            print(f"FTS query error ({e})")
 
 
 # ── regex backend ─────────────────────────────────────────────────────────────
@@ -212,14 +220,7 @@ def _search_regex(folder: Path, term: str, context: int, color_enabled: bool) ->
 def _search_fts(folder: Path, term: str, color_enabled: bool) -> None:
     from index import search_fts
 
-    try:
-        results = search_fts(folder, term)
-    except sqlite3.OperationalError as e:
-        # Bad FTS5 syntax (e.g. an unmatched quote/paren) -- fall back to regex
-        # rather than surfacing a raw sqlite error to the user.
-        print(f"FTS query error ({e}); retrying as regex...")
-        _search_regex(folder, term, context=40, color_enabled=color_enabled)
-        return
+    results = search_fts(folder, term)
 
     if not results:
         print("No matches found.")
