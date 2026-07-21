@@ -77,16 +77,14 @@ def _connect(folder: Path):
         con.executescript(_DDL)
         con.commit()
 
-        con.executescript(_DDL)
-        con.commit()
-
-        # Backfill FTS index for pre-existing rows (first run after upgrade)
+        # One-time backfill: if files_fts is empty but files has rows, this
+        # DB predates the FTS5 triggers -- populate the index from scratch
+        # rather than waiting for the next write to each row.
         fts_count = con.execute("SELECT COUNT(*) FROM files_fts").fetchone()[0]
         files_count = con.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         if fts_count == 0 and files_count > 0:
             con.execute("INSERT INTO files_fts(files_fts) VALUES ('rebuild')")
             con.commit()
-
         # Register REGEXP so callers can use `text REGEXP ?` in raw SQL if
         # they want; the search() function below uses Python-side filtering
         # instead, but having it in SQL is occasionally handy for debugging.

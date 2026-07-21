@@ -1,10 +1,31 @@
 import re
-from pathlib import Path
 import sqlite3
-
-from index import iter_index
 import sys
 import os
+from pathlib import Path
+
+from index import iter_index
+
+PREVIEW_CHARS = 80  # length of the plain preview shown for path-only hits
+
+
+def collapse_whitespace(str: str) -> str:
+    return " ".join(str.split())
+
+
+# ── color primitives ──────────────────────────────────────────────────────────
+
+
+def _supports_color() -> bool:
+    """Return True if stdout supports ANSI colors.
+
+    Respects the `NO_COLOR` environment convention and ensures stdout is a TTY.
+    """
+    if "NO_COLOR" in os.environ:
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    return sys.stdout.isatty()
 
 
 def _sgr(code, enabled: bool) -> str:
@@ -16,20 +37,80 @@ def _sgr(code, enabled: bool) -> str:
 
 
 def _color(text: str, code: str, enabled: bool) -> str:
-    if not enabled:
+    if not enabled or not text:
         return text
     return f"{_sgr(code, enabled)}{text}{_sgr(0, enabled)}"
 
 
-def _supports_color() -> bool:
-    """Return True if stdout supports ANSI colors.
+# ── shared rendering interface ────────────────────────────────────────────────
+#
+# Both backends (`_search_regex` and `_search_fts`) ultimately need to print
+# one line per hit: a colorized virtual path, and either a colorized snippet
+# (when the match is inside the text) or a plain preview of the file's start
+# (when only the path matched). These two helpers are the single place that
+# knows how that line gets built and colored.
 
-    Respects the `NO_COLOR` environment convention and ensures stdout is a TTY.
+
+def _colorize_spans(
+    text: str,
+    spans: list[tuple[int, int]],
+    hit_code: str,
+    color_enabled: bool,
+    base_code: str | None = None,
+) -> str:
+    """Color the given [start, end) spans in `text` with `hit_code`, and
+    optionally color the untouched portions with `base_code`."""
+    if not spans:
+        return _color(text, base_code, color_enabled) if base_code else text
+
+    parts = []
+    last = 0
+    for start, end in spans:
+        if start > last:
+            seg = text[last:start]
+            parts.append(_color(seg, base_code, color_enabled) if base_code else seg)
+        parts.append(_color(text[start:end], hit_code, color_enabled))
+        last = end
+    if last < len(text):
+        seg = text[last:]
+        parts.append(_color(seg, base_code, color_enabled) if base_code else seg)
+    return "".join(parts)
+
+
+def format_hit(
+    vpath: str,
+    vpath_spans: list[tuple[int, int]],
+    snippet: str,
+    snippet_spans: list[tuple[int, int]] | None,
+    color_enabled: bool,
+) -> str:
+    """Render one result line. Used by both search backends.
+
+    `snippet_spans=None` means `snippet` is a plain preview (e.g. the start
+    of the file for a path-only hit) and should not be highlighted.
     """
-    if "NO_COLOR" in os.environ:
-        return False
-    return sys.stdout.isatty()
+    path_str = _colorize_spans(
+        vpath, vpath_spans, "1;33", color_enabled, base_code="1;36"
+    )
+    snippet_str = (
+        snippet
+        if snippet_spans is None
+        else _colorize_spans(snippet, snippet_spans, "1;33", color_enabled)
+    )
+    snippet_str = collapse_whitespace(snippet_str)
 
+    return f"{path_str}: {snippet_str}".strip()
+
+
+def _preview(text: str, limit: int = PREVIEW_CHARS) -> str:
+    """Plain (uncolored) preview of the start of `text`."""
+    snippet = text[:limit]
+    if len(text) > limit:
+        snippet += "..."
+    return snippet
+
+
+# ── regex vs. FTS5 routing ────────────────────────────────────────────────────
 
 _REGEX_SIGNALS = re.compile(
     r"""
@@ -52,45 +133,27 @@ def looks_like_regex(term: str) -> bool:
     return bool(_REGEX_SIGNALS.search(term))
 
 
-def color_hit(vpath: str, snippet: str, hits: list[str]) -> str:
-    """Return a string with ANSI color codes highlighting the hits in the snippet."""
-    color_enabled = _supports_color()
-    # Highlight the hits in the snippet
-    for hit in hits:
-        snippet = snippet.replace(hit, _color(hit, "1;33", color_enabled))
-
-    # Highlight the virtual path
-    suffix_pos = vpath.rfind(":")
-    
-    vpath_suffix = vpath[:suffix_pos]
-    vpath_path = vpath[suffix_pos + 1 :]
-    
-    vpath_colored = _color(vpath_path, "1;36", color_enabled) + _color(
-        vpath_suffix, "1;32", color_enabled
-    )
-
-    return f"{vpath_colored}: {snippet}"
-
-
 def search_index(
     folder: Path, term: str, context: int = 40, mode: str = "auto"
 ) -> None:
-
+    color_enabled = _supports_color()
     use_regex = mode == "regex" or (mode == "auto" and looks_like_regex(term))
 
     if use_regex:
-        _search_regex(folder, term, context)
+        _search_regex(folder, term, context, color_enabled)
     else:
-        _search_fts(folder, term)
+        _search_fts(folder, term, color_enabled)
 
 
-def _search_regex(folder: Path, term: str, context: int) -> None:
+# ── regex backend ─────────────────────────────────────────────────────────────
+
+
+def _search_regex(folder: Path, term: str, context: int, color_enabled: bool) -> None:
     index = iter_index(folder)
     if index is None:
         print("No index found. Exiting...")
         return
 
-    color_enabled = _supports_color()
     try:
         pattern = re.compile(term, re.IGNORECASE)
     except re.error as e:
@@ -100,71 +163,54 @@ def _search_regex(folder: Path, term: str, context: int) -> None:
     found_any = False
     for vpath, entry in index:
         vpath_str = str(vpath)
-        file_match = pattern.search(vpath_str)
+        vpath_spans = [m.span() for m in pattern.finditer(vpath_str)]
 
         text = entry.get("text") or ""
         text_match = pattern.search(text) if text else None
 
-        if not file_match and not text_match:
+        if not vpath_spans and not text_match:
             continue
-
         found_any = True
 
-        # Build highlighted path (used whether or not there's also a text match)
-        parts = []
-        last = 0
-        for m in pattern.finditer(vpath_str):
-            if m.start() > last:
-                parts.append(_color(vpath_str[last : m.start()], "1;36", color_enabled))
-            parts.append(_color(m.group(0), "1;33", color_enabled))
-            last = m.end()
-        if last < len(vpath_str):
-            parts.append(_color(vpath_str[last:], "1;36", color_enabled))
-        path_str = (
-            "".join(parts) if file_match else _color(vpath_str, "1;36", color_enabled)
-        )
-
         if text_match:
-            # Expand the text snippet regardless of whether the path also matched
-            line_no = text.count("\n", 0, text_match.start()) + 1
             start = max(0, text_match.start() - context)
             end = min(len(text), text_match.end() + context)
-            snippet = text[start:end]
-            snippet = pattern.sub(
-                lambda m: _color(f"{m.group(0)}", "1;33", color_enabled), snippet
+            raw = text[start:end]
+            # Color before collapsing whitespace: escape sequences contain no
+            # whitespace, so `" ".join(raw.split())` afterwards is safe and
+            # avoids having to re-map match spans onto the collapsed string.
+            colored = pattern.sub(
+                lambda m: _color(m.group(0), "1;33", color_enabled), raw
             )
-            snippet = " ".join(snippet.split())
-            prefix = "..." if start > 0 else ""
-            suffix = "..." if end < len(text) else ""
-            lineno_str = _color(str(line_no), "1;32", color_enabled)
-
-            if file_match:
-                path_hit_str = _color("<path hit>", "1;32", color_enabled)
-                print(
-                    f"{path_str.strip()}:{path_hit_str} {lineno_str} {prefix} {snippet} {suffix}".strip()
-                )
-            else:
-                print(f"{path_str}:{lineno_str} {prefix} {snippet} {suffix}".strip())
+            snippet = " ".join(colored.split())
+            if start > 0:
+                snippet = f"...{snippet}"
+            if end < len(text):
+                snippet = f"{snippet}..."
+            snippet_spans = None  # already colored inline
         else:
-            # Path matched but no text match (or no text at all)
-            path_hit_str = _color("<path hit>", "1;32", color_enabled)
-            print(f"{path_str.strip()}:{path_hit_str}")
+            snippet = _preview(text)
+            snippet_spans = None
+
+        print(format_hit(vpath_str, vpath_spans, snippet, snippet_spans, color_enabled))
 
     if not found_any:
         print("No matches found.")
 
 
-def _search_fts(folder: Path, term: str) -> None:
+# ── FTS5 backend ──────────────────────────────────────────────────────────────
+
+
+def _search_fts(folder: Path, term: str, color_enabled: bool) -> None:
     from index import search_fts
 
-    color_enabled = _supports_color()
     try:
         results = search_fts(folder, term)
     except sqlite3.OperationalError as e:
         # Bad FTS5 syntax (e.g. an unmatched quote/paren) -- fall back to regex
         # rather than surfacing a raw sqlite error to the user.
         print(f"FTS query error ({e}); retrying as regex...")
-        _search_regex(folder, term, context=40)
+        _search_regex(folder, term, context=40, color_enabled=color_enabled)
         return
 
     if not results:
@@ -172,16 +218,25 @@ def _search_fts(folder: Path, term: str) -> None:
         return
 
     for r in results:
-        path_hl = (
-            r["path_hl"]
-            .replace("\x01", _sgr("1;33", color_enabled))
-            .replace("\x02", _sgr(0, color_enabled))
+        # highlight()/snippet() already embed \x01..\x02 markers around hits;
+        # when there's no match in a column (e.g. a path-only hit has no
+        # match inside `text`), snippet() falls back to the start of that
+        # column's content -- which gives us the "start of text" preview for
+        # free, with no markers to colorize.
+        # `highlight()` only wraps matched spans in markers -- it never colors
+        # the untouched part of the path. Match the regex backend's look by
+        # wrapping the whole path in the base cyan color, and having a hit's
+        # closing marker drop back to cyan (not a full reset) so the color
+        # continues after the highlighted span instead of going plain.
+        base_start = _sgr("1;36", color_enabled)
+        hit_start = _sgr("1;33", color_enabled)
+        reset = _sgr(0, color_enabled)
+        path_str = (
+            base_start
+            + r["path_hl"].replace("\x01", hit_start).replace("\x02", base_start)
+            + reset
         )
-        text_snip = (
-            r["text_snip"]
-            .replace("\x01", _sgr("1;33", color_enabled))
-            .replace("\x02", _sgr(0, color_enabled))
-        )
-        file_match = "\x01" in r["path_hl"]
-        tag = _color("<path hit>", "1;32", color_enabled) if file_match else ""
-        print(f"{path_hl}:{tag} {text_snip}".strip())
+
+        snippet_str = r["text_snip"].replace("\x01", hit_start).replace("\x02", reset)
+        snippet_str = collapse_whitespace(snippet_str)
+        print(f"{path_str}: {snippet_str}".strip())
