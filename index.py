@@ -38,7 +38,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
     text,
     content='files',
     content_rowid='rowid',
-    tokenize='porter unicode61'
+    tokenize='unicode61'
 );
 
 CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
