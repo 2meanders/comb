@@ -32,6 +32,31 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+    virtual_path,
+    text,
+    content='files',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
+    INSERT INTO files_fts(rowid, virtual_path, text)
+    VALUES (new.rowid, new.virtual_path, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
+    INSERT INTO files_fts(files_fts, rowid, virtual_path, text)
+    VALUES ('delete', old.rowid, old.virtual_path, old.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
+    INSERT INTO files_fts(files_fts, rowid, virtual_path, text)
+    VALUES ('delete', old.rowid, old.virtual_path, old.text);
+    INSERT INTO files_fts(rowid, virtual_path, text)
+    VALUES (new.rowid, new.virtual_path, new.text);
+END;
 """
 
 
@@ -51,6 +76,17 @@ def _connect(folder: Path):
         con.execute("PRAGMA synchronous=NORMAL")
         con.executescript(_DDL)
         con.commit()
+
+        con.executescript(_DDL)
+        con.commit()
+
+        # Backfill FTS index for pre-existing rows (first run after upgrade)
+        fts_count = con.execute("SELECT COUNT(*) FROM files_fts").fetchone()[0]
+        files_count = con.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+        if fts_count == 0 and files_count > 0:
+            con.execute("INSERT INTO files_fts(files_fts) VALUES ('rebuild')")
+            con.commit()
+
         # Register REGEXP so callers can use `text REGEXP ?` in raw SQL if
         # they want; the search() function below uses Python-side filtering
         # instead, but having it in SQL is occasionally handy for debugging.
@@ -87,6 +123,7 @@ def iter_index(folder: Path) -> Iterator[tuple[str, dict]] | None:
         return None
 
     def _generate():
+        con = None
         try:
             con = sqlite3.connect(_cache_path(folder), check_same_thread=False)
             con.execute("PRAGMA journal_mode=WAL")
@@ -96,7 +133,8 @@ def iter_index(folder: Path) -> Iterator[tuple[str, dict]] | None:
             for row in cur:  # cursor is itself an iterator; fetches in arraysize chunks
                 yield row[0], {"mtime": row[1], "size": row[2], "text": row[3]}
         finally:
-            con.close()
+            if con:
+                con.close()
 
     return _generate()
 
@@ -273,3 +311,26 @@ def build_index(
 def index_exists(folder: Path) -> bool:
     """Return True if a cache exists for `folder`."""
     return _cache_path(folder).exists()
+
+
+def search_fts(folder: Path, query: str, limit: int = 200) -> list[dict]:
+    """FTS5 MATCH search. Raises sqlite3.OperationalError on malformed
+    FTS5 syntax so callers can decide how to handle it."""
+    with _connect(folder) as con:
+        cur = con.execute(
+            """
+            SELECT
+                highlight(files_fts, 0, '\x01', '\x02') AS path_hl,
+                snippet(files_fts, 1, '\x01', '\x02', '...', 10) AS text_snip,
+                bm25(files_fts) AS rank
+            FROM files_fts
+            WHERE files_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (query, limit),
+        )
+        return [
+            {"path_hl": row[0], "text_snip": row[1], "rank": row[2]}
+            for row in cur.fetchall()
+        ]
