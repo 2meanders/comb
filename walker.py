@@ -30,11 +30,13 @@ from pathlib import Path
 from typing import Callable, Iterator, BinaryIO, Optional, Union
 
 INDEX_FILENAME = ".combed"
+COMBIGNORE_FILENAME = ".combignore"
 
 
 def _is_comb_file(path: Path) -> bool:
     return path.is_file() and path.name in (
         INDEX_FILENAME,
+        COMBIGNORE_FILENAME,
         f"{INDEX_FILENAME}-shm",
         f"{INDEX_FILENAME}-wal",
     )
@@ -79,9 +81,18 @@ IGNORED_FILE_PATTERNS = (
 
 
 def _is_ignored_path(rel_path: str) -> bool:
+    """Compatibility wrapper: no extra patterns provided."""
+    return _is_ignored_path_with_patterns(rel_path, None)
+
+
+def _is_ignored_path_with_patterns(
+    rel_path: str, extra_patterns: Optional[list[str]]
+) -> bool:
     """Check a '/'-separated relative path (disk-relative or archive-internal)
-    against the ignore rules."""
-    parts = rel_path.replace("\\", "/").split("/")
+    against the ignore rules and optional additional patterns.
+    """
+    rel = rel_path.replace("\\", "/")
+    parts = rel.split("/")
     filename = parts[-1]
 
     for part in parts[:-1]:
@@ -92,7 +103,35 @@ def _is_ignored_path(rel_path: str) -> bool:
         if fnmatch.fnmatch(filename.lower(), pattern):
             return True
 
-    return False
+    if not extra_patterns:
+        return False
+
+    def _match_pattern(pat: str) -> bool:
+        p = pat.replace("\\", "/").strip()
+        if not p or p.startswith("#"):
+            return False
+        if p.endswith("/"):
+            dirpat = p.rstrip("/")
+            return rel == dirpat or rel.startswith(dirpat + "/")
+        anchored = p.startswith("/")
+        if anchored:
+            p = p.lstrip("/")
+        if "/" in p:
+            return fnmatch.fnmatch(rel, p)
+        return fnmatch.fnmatch(filename, p)
+
+    ignored = False
+    for raw in extra_patterns:
+        pat = raw.strip()
+        if not pat or pat.startswith("#"):
+            continue
+        neg = pat.startswith("!")
+        if neg:
+            pat = pat[1:]
+        if _match_pattern(pat):
+            ignored = not neg
+
+    return ignored
 
 
 @dataclass
@@ -363,14 +402,25 @@ def iter_entries(root: Path, index_all: bool) -> Iterator[Entry]:
     file found inside (possibly nested) archives, and every attachment
     found inside (possibly nested) .eml messages."""
     root = Path(root)
+    # read .combignore (if present) unless index_all is requested
+    combignore_patterns: Optional[list[str]] = None
+    if not index_all:
+        combignore_file = root / COMBIGNORE_FILENAME
+        if combignore_file.is_file():
+            try:
+                combignore_patterns = [
+                    line.rstrip("\n") for line in combignore_file.read_text().splitlines()
+                ]
+            except Exception:
+                combignore_patterns = None
+
     for path in sorted(root.rglob("*")):
         if path.is_dir():
             continue
         if _is_comb_file(path):
             continue
-
         rel = str(path.relative_to(root))
-        if not index_all and _is_ignored_path(rel):
+        if not index_all and _is_ignored_path_with_patterns(rel, combignore_patterns):
             continue
 
         stat = path.stat()
@@ -380,6 +430,7 @@ def iter_entries(root: Path, index_all: bool) -> Iterator[Entry]:
             mtime=stat.st_mtime,
             size=stat.st_size,
             index_all=index_all,
+            index_ignore_patterns=combignore_patterns,
             self_data_func=_make_disk_reader(path),
             # Disk files are cheap to "reopen" -- just reuse the Path, no
             # need to read anything unless recursion actually happens.
@@ -416,6 +467,7 @@ def _handle_source(
     mtime: float,
     size: int,
     index_all: bool,
+    index_ignore_patterns: Optional[list[str]],
     self_data_func: Callable[[], Union[bytes, Path, BinaryIO]],
     open_for_recursion: Callable[[], Union[Path, BinaryIO]],
 ) -> Iterator[Entry]:
@@ -448,7 +500,9 @@ def _handle_source(
         recursion_source = open_for_recursion()
     except Exception:
         return
-    yield from _iter_archive(vpath, fmt, recursion_source, mtime, index_all)
+    yield from _iter_archive(
+        vpath, fmt, recursion_source, mtime, index_all, index_ignore_patterns
+    )
 
 
 def _iter_archive(
@@ -457,6 +511,7 @@ def _iter_archive(
     source: Union[Path, BinaryIO],
     mtime: float,
     index_all: bool,
+    index_ignore_patterns: Optional[list[str]],
 ) -> Iterator[Entry]:
     """Yield an Entry for every member found in `source` via `fmt`,
     recursing into any nested archives/containers found inside it.
@@ -468,7 +523,7 @@ def _iter_archive(
         return
 
     for name, size in members:
-        if not index_all and _is_ignored_path(name):
+        if not index_all and _is_ignored_path_with_patterns(name, index_ignore_patterns):
             continue
 
         vpath = f"{prefix}:{name}"
@@ -478,6 +533,7 @@ def _iter_archive(
             mtime=mtime,  # inherit the outer archive's mtime
             size=size,
             index_all=index_all,
+            index_ignore_patterns=index_ignore_patterns,
             self_data_func=_make_member_reader(fmt, source, name),
             open_for_recursion=lambda fmt=fmt, source=source, name=name, size=size: (
                 _materialize_member(fmt, source, name, size)
