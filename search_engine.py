@@ -147,7 +147,9 @@ def search_index(
             _search_regex(folder, term, context, color_enabled)
         else:
             try:
-                _search_fts(folder, term, color_enabled)
+                num_results = _search_fts(folder, term, color_enabled)
+                if num_results == 0:
+                    _search_regex(folder, term, context, color_enabled)
             except sqlite3.OperationalError:
                 _search_regex(folder, term, context, color_enabled)
     elif mode == "regex":
@@ -164,7 +166,11 @@ def search_index(
 # ── regex backend ─────────────────────────────────────────────────────────────
 
 
-def _search_regex(folder: Path, term: str, context: int, color_enabled: bool) -> None:
+def _search_regex(folder: Path, term: str, context: int, color_enabled: bool) -> int:
+    """
+    Returns the number of results.
+    """
+
     index = iter_index(folder)
     if index is None:
         print("No index found. Exiting...")
@@ -176,7 +182,7 @@ def _search_regex(folder: Path, term: str, context: int, color_enabled: bool) ->
         print(f"Invalid regex: {e}")
         return
 
-    found_any = False
+    found_count = 0
     for vpath, entry in index:
         vpath_str = str(vpath)
         vpath_spans = [m.span() for m in pattern.finditer(vpath_str)]
@@ -186,7 +192,7 @@ def _search_regex(folder: Path, term: str, context: int, color_enabled: bool) ->
 
         if not vpath_spans and not text_match:
             continue
-        found_any = True
+        found_count += 1
 
         if text_match:
             start = max(0, text_match.start() - context)
@@ -210,14 +216,19 @@ def _search_regex(folder: Path, term: str, context: int, color_enabled: bool) ->
 
         print(format_hit(vpath_str, vpath_spans, snippet, snippet_spans, color_enabled))
 
-    if not found_any:
+    if found_count > 0:
         print("No matches found.")
+
+    return found_count
 
 
 # ── FTS5 backend ──────────────────────────────────────────────────────────────
 
 
-def _search_fts(folder: Path, term: str, color_enabled: bool) -> None:
+def _search_fts(folder: Path, term: str, color_enabled: bool) -> int:
+    """
+    Returns the number of results.
+    """
     from index import search_fts
 
     results = search_fts(folder, term)
@@ -249,3 +260,5 @@ def _search_fts(folder: Path, term: str, color_enabled: bool) -> None:
         snippet_str = r["text_snip"].replace("\x01", hit_start).replace("\x02", reset)
         snippet_str = collapse_whitespace(snippet_str)
         print(f"{path_str}: {snippet_str}".strip())
+
+    return len(results)
