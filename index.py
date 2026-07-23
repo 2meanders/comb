@@ -215,23 +215,17 @@ def _flush(con: sqlite3.Connection, results: list[dict]) -> None:
 
 def build_index(
     folder: Path,
-    force: bool = False,
     verbose: bool = True,
     workers: int = 1,
     index_all: bool = False,
 ) -> None:
     """(Re)build the cache for `folder`.
 
-    Unless force=True, only files whose mtime/size changed are re-extracted.
     Safe to interrupt: results are flushed every FLUSH_EVERY completions.
     """
     folder = Path(folder)
 
     with _connect(folder) as con:
-        if force:
-            con.execute("DELETE FROM files")
-            con.commit()
-
         existing = {
             row[0]: (row[1], row[2])
             for row in con.execute(

@@ -53,7 +53,6 @@ def cmd_build(args):
     ):
         build_index(
             folder,
-            force=False,
             verbose=args.verbose,
             workers=args.workers,
             index_all=args.all,
@@ -65,9 +64,10 @@ def cmd_rebuild(args):
     with interruptible(
         "Rebuild interrupted by user. Saving partial index.", folder, args
     ):
+        _clear_index(folder, args.verbose)
+
         build_index(
             folder,
-            force=True,
             verbose=args.verbose,
             workers=args.workers,
             index_all=args.all,
