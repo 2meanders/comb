@@ -38,7 +38,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
     text,
     content='files',
     content_rowid='rowid',
-    tokenize='unicode61'
+    tokenize='trigram case_sensitive 0'
 );
 
 CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
