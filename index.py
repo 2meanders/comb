@@ -161,6 +161,12 @@ def clear_index(folder: Path) -> bool:
 
 # ── build internals ───────────────────────────────────────────────────────────
 
+MTIME_TOLERANCE = 2.0  # seconds
+
+
+def _mtime_changed(cached_mtime: float, current_mtime: float) -> bool:
+    return abs(cached_mtime - current_mtime) > MTIME_TOLERANCE
+
 
 def _index_entry(entry, verbose: bool) -> dict:
     try:
@@ -235,7 +241,11 @@ def build_index(
         for entry in iter_entries(folder, index_all=index_all):
             seen.add(entry.virtual_path)
             prev = existing.get(entry.virtual_path)
-            if prev and prev[0] == entry.mtime and prev[1] == entry.size:
+            if (
+                prev
+                and not _mtime_changed(prev[0], entry.mtime)
+                and prev[1] == entry.size
+            ):
                 count_skip += 1
                 continue
             pending.append(entry)
