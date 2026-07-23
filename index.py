@@ -324,7 +324,7 @@ def index_exists(folder: Path) -> bool:
     return _cache_path(folder).exists()
 
 
-def search_fts(folder: Path, query: str, limit: int = 200) -> list[dict]:
+def search_fts(folder: Path, query: str) -> list[dict]:
     """FTS5 MATCH search. Raises sqlite3.OperationalError on malformed
     FTS5 syntax so callers can decide how to handle it."""
     with _connect(folder) as con:
@@ -337,9 +337,8 @@ def search_fts(folder: Path, query: str, limit: int = 200) -> list[dict]:
             FROM files_fts
             WHERE files_fts MATCH ?
             ORDER BY rank
-            LIMIT ?
             """,
-            (query, limit),
+            (query,),
         )
         return [
             {"path_hl": row[0], "text_snip": row[1], "rank": row[2]}
