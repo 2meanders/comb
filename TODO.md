@@ -5,3 +5,4 @@
 - [x] Microsoft Office files
 - [ ] Open Document Format
 - [ ] Coverage: list which folders are covered by the cache, and too which degree (percentage). With the ability to specify subfolders as well.
+- [ ] Respect .gitignore
