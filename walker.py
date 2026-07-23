@@ -18,6 +18,7 @@ or, for nested archives/containers:
     message.eml:attachments.zip:report.docx
 """
 
+import bisect
 import fnmatch
 import io
 import shutil
@@ -140,6 +141,44 @@ class Entry:
     mtime: float  # modification time, used to detect changes
     size: int  # size in bytes, used to detect changes
     data_func: Callable[[], Union[bytes, Path, BinaryIO]]
+    # True for the archive/container file itself (a zip, tar, ...): it gets
+    # an Entry so it's addressable/searchable by path like anything else,
+    # but has no text of its own -- callers should not run extraction on it.
+    is_container: bool = False
+
+
+class KnownIndex:
+    """Read-only view over the previous build's cached
+    (virtual_path -> (mtime, size)) records.
+
+    Used to shortcut re-listing an archive/container: a container is a
+    single file on disk, so if *its own* (mtime, size) hasn't changed since
+    the last build, none of its (possibly deeply nested) descendants can
+    have changed either -- their cached records can be reused verbatim
+    without opening the container at all. `children()` answers "what did
+    we previously find under this container's virtual_path prefix?" via a
+    sorted-list binary search, so this stays cheap even with many archives
+    in a large cache (no per-container full-dict scan).
+    """
+
+    __slots__ = ("_map", "_sorted_keys")
+
+    def __init__(self, known: dict[str, tuple[float, int]]):
+        self._map = known
+        self._sorted_keys = sorted(known.keys())
+
+    def get(self, vpath: str) -> Optional[tuple[float, int]]:
+        return self._map.get(vpath)
+
+    def children(self, prefix: str) -> list[tuple[str, tuple[float, int]]]:
+        """All cached (virtual_path, (mtime, size)) pairs whose
+        virtual_path starts with `prefix` (a container's own vpath plus
+        the trailing ":" separator), in sorted order."""
+        assert prefix.endswith(":")
+        hi_bound = prefix[:-1] + ";"  # ';' immediately follows ':' in ASCII
+        lo = bisect.bisect_left(self._sorted_keys, prefix)
+        hi = bisect.bisect_left(self._sorted_keys, hi_bound)
+        return [(k, self._map[k]) for k in self._sorted_keys[lo:hi]]
 
 
 # ── archive formats ─────────────────────────────────────────────────────────
@@ -397,11 +436,23 @@ def _container_format_for(filename: str) -> Optional[ArchiveFormat]:
 # ── walking ──────────────────────────────────────────────────────────────────
 
 
-def iter_entries(root: Path, index_all: bool) -> Iterator[Entry]:
+def iter_entries(
+    root: Path,
+    index_all: bool,
+    known: Optional[dict[str, tuple[float, int]]] = None,
+) -> Iterator[Entry]:
     """Walk `root` on disk, yielding an Entry for every real file, every
     file found inside (possibly nested) archives, and every attachment
-    found inside (possibly nested) .eml messages."""
+    found inside (possibly nested) .eml messages.
+
+    `known`, if given, is the previous build's cache of
+    virtual_path -> (mtime, size). When an archive/container's own
+    (mtime, size) matches what's in `known`, its members are reused
+    straight from that cache instead of being re-listed/re-opened -- see
+    KnownIndex and _handle_source's shortcut below.
+    """
     root = Path(root)
+    known_index = KnownIndex(known) if known else None
     # read .combignore (if present) unless index_all is requested
     combignore_patterns: Optional[list[str]] = None
     if not index_all:
@@ -435,6 +486,7 @@ def iter_entries(root: Path, index_all: bool) -> Iterator[Entry]:
             # Disk files are cheap to "reopen" -- just reuse the Path, no
             # need to read anything unless recursion actually happens.
             open_for_recursion=lambda path=path: path,
+            known=known_index,
         )
 
 
@@ -461,6 +513,23 @@ def _make_member_reader(
 MAX_IN_MEMORY_MEMBER_SIZE = 20 * 1024 * 1024  # 20 MB
 
 
+def _unusable_data_func(vpath: str) -> Callable[[], BinaryIO]:
+    """data_func for an Entry reconstructed from `known` rather than from a
+    freshly-opened container. Its (mtime, size) is copied verbatim from the
+    cache, so build_index's own unchanged-file check always short-circuits
+    before this would ever be called -- it only exists as a loud failure
+    mode in case that assumption is ever violated."""
+
+    def _read() -> BinaryIO:
+        raise RuntimeError(
+            f"data_func called for {vpath!r}, an entry reconstructed from "
+            "the cache without re-opening its container; this should be "
+            "unreachable because its (mtime, size) matches the cache exactly"
+        )
+
+    return _read
+
+
 def _handle_source(
     vpath: str,
     name: str,
@@ -470,12 +539,13 @@ def _handle_source(
     index_ignore_patterns: Optional[list[str]],
     self_data_func: Callable[[], Union[bytes, Path, BinaryIO]],
     open_for_recursion: Callable[[], Union[Path, BinaryIO]],
+    known: Optional["KnownIndex"] = None,
 ) -> Iterator[Entry]:
     """Decide what one file -- on disk, or an archive/eml member -- is, and
     handle it accordingly:
 
-      * a pure archive (zip/tar/...): no Entry of its own, just recurse
-        into its members.
+      * a pure archive (zip/tar/...): an Entry for the archive itself
+        (no text -- see is_container), plus one Entry per member.
       * a hybrid container (.eml): an Entry for the message itself (so
         extractors.py can pull out its subject/body) *and* recursion into
         its attachments.
@@ -487,21 +557,51 @@ def _handle_source(
     archive_fmt = _archive_format_for(name)
     container_fmt = None if archive_fmt is not None else _container_format_for(name)
 
-    if archive_fmt is None:
-        yield Entry(
-            virtual_path=vpath, mtime=mtime, size=size, data_func=self_data_func
-        )
+    # Every file gets an Entry, including archives/containers themselves --
+    # that makes them addressable/searchable by path like anything else.
+    # Pure archives (is_container=True) carry no text of their own; a
+    # hybrid container like .eml still gets its subject/body extracted
+    # normally, so it's not marked as a container here.
+    yield Entry(
+        virtual_path=vpath,
+        mtime=mtime,
+        size=size,
+        data_func=self_data_func,
+        is_container=archive_fmt is not None,
+    )
 
     fmt = archive_fmt or container_fmt
     if fmt is None:
         return
+
+    # Shortcut: a container is one file on disk, so if its own (mtime, size)
+    # matches what we cached last time, none of its descendants -- however
+    # deeply nested -- can have changed either. Reuse their cached records
+    # directly instead of opening/listing this container at all.
+    if known is not None:
+        prev = known.get(vpath)
+        if prev is not None and prev == (mtime, size):
+            cached_children = known.children(vpath + ":")
+            if cached_children:
+                for child_vpath, (child_mtime, child_size) in cached_children:
+                    yield Entry(
+                        virtual_path=child_vpath,
+                        mtime=child_mtime,
+                        size=child_size,
+                        data_func=_unusable_data_func(child_vpath),
+                    )
+                return
+            # No cached children found under this prefix -- either the
+            # container is genuinely empty, or this cache predates the
+            # container-self-Entry feature and never recorded any. Either
+            # way, fall through and actually list it, to be safe.
 
     try:
         recursion_source = open_for_recursion()
     except Exception:
         return
     yield from _iter_archive(
-        vpath, fmt, recursion_source, mtime, index_all, index_ignore_patterns
+        vpath, fmt, recursion_source, mtime, index_all, index_ignore_patterns, known
     )
 
 
@@ -512,6 +612,7 @@ def _iter_archive(
     mtime: float,
     index_all: bool,
     index_ignore_patterns: Optional[list[str]],
+    known: Optional["KnownIndex"] = None,
 ) -> Iterator[Entry]:
     """Yield an Entry for every member found in `source` via `fmt`,
     recursing into any nested archives/containers found inside it.
@@ -538,6 +639,7 @@ def _iter_archive(
             open_for_recursion=lambda fmt=fmt, source=source, name=name, size=size: (
                 _materialize_member(fmt, source, name, size)
             ),
+            known=known,
         )
 
 

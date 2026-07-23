@@ -161,14 +161,21 @@ def clear_index(folder: Path) -> bool:
 
 # ── build internals ───────────────────────────────────────────────────────────
 
-MTIME_TOLERANCE = 2.0  # seconds
-
-
-def _mtime_changed(cached_mtime: float, current_mtime: float) -> bool:
-    return abs(cached_mtime - current_mtime) > MTIME_TOLERANCE
-
 
 def _index_entry(entry, verbose: bool) -> dict:
+    if entry.is_container:
+        # A pure archive/tar has no text of its own -- only its members
+        # do -- so there's nothing to extract, and no need to pay the cost
+        # of reading the whole archive via data_func() just to discard it.
+        if verbose:
+            print(f"  + indexing {entry.virtual_path} ... (container, no text)")
+        return {
+            "virtual_path": entry.virtual_path,
+            "mtime": entry.mtime,
+            "size": entry.size,
+            "text": "",
+        }
+
     try:
         data = entry.data_func()
         if verbose:
@@ -238,14 +245,10 @@ def build_index(
         count_removed = 0
         pending = []
 
-        for entry in iter_entries(folder, index_all=index_all):
+        for entry in iter_entries(folder, index_all=index_all, known=existing):
             seen.add(entry.virtual_path)
             prev = existing.get(entry.virtual_path)
-            if (
-                prev
-                and not _mtime_changed(prev[0], entry.mtime)
-                and prev[1] == entry.size
-            ):
+            if prev and prev[0] == entry.mtime and prev[1] == entry.size:
                 count_skip += 1
                 continue
             pending.append(entry)
