@@ -33,6 +33,12 @@ from typing import Callable, Iterator, BinaryIO, Optional, Union
 INDEX_FILENAME = ".combed"
 COMBIGNORE_FILENAME = ".combignore"
 
+MTIME_TOLERANCE = 2.0  # seconds
+
+
+def mtimes_match(a: float, b: float) -> bool:
+    return abs(a - b) <= MTIME_TOLERANCE
+
 
 def _is_comb_file(path: Path) -> bool:
     return path.is_file() and path.name in (
@@ -460,7 +466,8 @@ def iter_entries(
         if combignore_file.is_file():
             try:
                 combignore_patterns = [
-                    line.rstrip("\n") for line in combignore_file.read_text().splitlines()
+                    line.rstrip("\n")
+                    for line in combignore_file.read_text().splitlines()
                 ]
             except Exception:
                 combignore_patterns = None
@@ -624,7 +631,9 @@ def _iter_archive(
         return
 
     for name, size in members:
-        if not index_all and _is_ignored_path_with_patterns(name, index_ignore_patterns):
+        if not index_all and _is_ignored_path_with_patterns(
+            name, index_ignore_patterns
+        ):
             continue
 
         vpath = f"{prefix}:{name}"
