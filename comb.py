@@ -100,7 +100,7 @@ def cmd_search(args):
 
     with interruptible("Search interrupted by user. Exiting.", folder, args):
         print("Searching...")
-        search_index(folder, args.term, context=args.context, mode=args.mode)
+        search_index(folder, args.term, context=args.context, mode=args.mode, fuzzy_threshold=args.fuzzy_threshold)
 
     if args.clear:
         _clear_index(folder, verbose=args.verbose)
@@ -212,9 +212,15 @@ def build_parser():
     p_search.add_argument(
         "-m",
         "--mode",
-        choices=["auto", "fts", "regex"],
+        choices=["auto", "fts", "regex", "fuzzy"],
         default="auto",
-        help="The search mode. Can be either fts for SQLite's FTS5, regex for regex or auto if comb should try to find the best mode.",
+        help="The search mode. Can be either 'fts' for SQLite's FTS5, 'regex' for regex, 'fuzzy' for fuzzy searching or 'auto' if comb should try to find the best mode.",
+    )
+    p_search.add_argument(
+        "--fuzzy-threshold",
+        type=int,
+        default=80,
+        help="The threshold for a fuzzy search match to be yielded as a result. Does nothing when the search algorithm is not fuzzy search."
     )
     p_search.set_defaults(func=cmd_search)
 

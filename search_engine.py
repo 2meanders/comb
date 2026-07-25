@@ -134,11 +134,11 @@ def looks_like_regex(term: str) -> bool:
 
 
 def search_index(
-    folder: Path, term: str, context: int = 40, mode: str = "auto"
+    folder: Path, term: str, context: int = 40, fuzzy_threshold: int = 80, mode: str = "auto"
 ) -> None:
     color_enabled = _supports_color()
 
-    if mode not in ("auto", "fts", "regex"):
+    if mode not in ("auto", "fts", "regex", "fuzzy"):
         print(f"Search mode '{mode}' not valid. Falling back to auto.")
         mode = "auto"
 
@@ -151,7 +151,9 @@ def search_index(
                 if num_results == 0:
                     _search_regex(folder, term, context, color_enabled)
             except sqlite3.OperationalError:
-                _search_regex(folder, term, context, color_enabled)
+                num_results = _search_regex(folder, term, context, color_enabled)
+                if num_results == 0:
+                    _search_fuzzy(folder, term, fuzzy_threshold, color_enabled) 
     elif mode == "regex":
         _search_regex(folder, term, context, color_enabled)
     elif mode == "fts":
@@ -161,6 +163,9 @@ def search_index(
             # Bad FTS5 syntax (e.g. an unmatched quote/paren) -- fall back to regex
             # rather than surfacing a raw sqlite error to the user.
             print(f"FTS query error ({e})")
+    elif mode == "fuzzy":
+        _search_fuzzy(folder, term, fuzzy_threshold, color_enabled)
+
 
 
 # ── regex backend ─────────────────────────────────────────────────────────────
@@ -262,3 +267,51 @@ def _search_fts(folder: Path, term: str, color_enabled: bool) -> int:
         print(f"{path_str}: {snippet_str}".strip())
 
     return len(results)
+
+def _search_fuzzy(folder: Path, term: str, threshold: int, color_enabled: bool) -> int:
+    """
+    threshold: 0-100
+    """
+    from rapidfuzz import fuzz
+    index = iter_index(folder)
+    if index is None:
+        print("No index found. Exiting...")
+        return 0
+
+    scored = []
+    for vpath, entry in index:
+        vpath_str = str(vpath)
+        text = entry.get("text") or ""
+
+        path_align = fuzz.partial_ratio_alignment(term, vpath_str)
+        text_align = fuzz.partial_ratio_alignment(term, text) if text else None
+        text_score = text_align.score if text_align else 0
+
+        best_score = max(path_align.score, text_score)
+        if best_score < threshold:
+            continue
+
+        scored.append((best_score, vpath_str, path_align, text, text_align))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    for score, vpath_str, path_align, text, text_align in scored:
+        vpath_spans = [(path_align.dest_start, path_align.dest_end)] if path_align.score >= threshold else []
+
+        if text_align and text_align.score >= threshold:
+            start = max(0, text_align.dest_start - 40)
+            end = min(len(text), text_align.dest_end + 40)
+            snippet = text[start:end]
+            snippet_spans = [(text_align.dest_start - start, text_align.dest_end - start)]
+            if start > 0:
+                snippet = "..." + snippet
+            snippet_spans = [(s + 3, e + 3) for s, e in snippet_spans] if start > 0 else snippet_spans
+        else:
+            snippet = _preview(text)
+            snippet_spans = None
+
+        print(format_hit(vpath_str, vpath_spans, snippet, snippet_spans, color_enabled))
+
+    if not scored:
+        print("No matches found.")
+    return len(scored)
