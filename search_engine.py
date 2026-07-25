@@ -147,24 +147,24 @@ def search_index(
             _search_regex(folder, term, context, color_enabled)
         else:
             try:
-                num_results = _search_fts(folder, term, color_enabled)
+                num_results = _search_fts(folder, term, context, color_enabled)
                 if num_results == 0:
                     _search_regex(folder, term, context, color_enabled)
             except sqlite3.OperationalError:
                 num_results = _search_regex(folder, term, context, color_enabled)
                 if num_results == 0:
-                    _search_fuzzy(folder, term, fuzzy_threshold, color_enabled) 
+                    _search_fuzzy(folder, term, context, fuzzy_threshold, color_enabled) 
     elif mode == "regex":
         _search_regex(folder, term, context, color_enabled)
     elif mode == "fts":
         try:
-            _search_fts(folder, term, color_enabled)
+            _search_fts(folder, term, context, color_enabled)
         except sqlite3.OperationalError as e:
             # Bad FTS5 syntax (e.g. an unmatched quote/paren) -- fall back to regex
             # rather than surfacing a raw sqlite error to the user.
             print(f"FTS query error ({e})")
     elif mode == "fuzzy":
-        _search_fuzzy(folder, term, fuzzy_threshold, color_enabled)
+        _search_fuzzy(folder, term, context, fuzzy_threshold, color_enabled)
 
 
 
@@ -230,13 +230,13 @@ def _search_regex(folder: Path, term: str, context: int, color_enabled: bool) ->
 # ── FTS5 backend ──────────────────────────────────────────────────────────────
 
 
-def _search_fts(folder: Path, term: str, color_enabled: bool) -> int:
+def _search_fts(folder: Path, term: str, context: int, color_enabled: bool) -> int:
     """
     Returns the number of results.
     """
     from index import search_fts
 
-    results = search_fts(folder, term)
+    results = search_fts(folder, term, context)
 
     if not results:
         print("No matches found.")
@@ -268,7 +268,7 @@ def _search_fts(folder: Path, term: str, color_enabled: bool) -> int:
 
     return len(results)
 
-def _search_fuzzy(folder: Path, term: str, threshold: int, color_enabled: bool) -> int:
+def _search_fuzzy(folder: Path, term: str, context: int, threshold: int, color_enabled: bool) -> int:
     """
     threshold: 0-100
     """
@@ -299,8 +299,8 @@ def _search_fuzzy(folder: Path, term: str, threshold: int, color_enabled: bool) 
         vpath_spans = [(path_align.dest_start, path_align.dest_end)] if path_align.score >= threshold else []
 
         if text_align and text_align.score >= threshold:
-            start = max(0, text_align.dest_start - 40)
-            end = min(len(text), text_align.dest_end + 40)
+            start = max(0, text_align.dest_start - context)
+            end = min(len(text), text_align.dest_end + context)
             snippet = text[start:end]
             snippet_spans = [(text_align.dest_start - start, text_align.dest_end - start)]
             if start > 0:
