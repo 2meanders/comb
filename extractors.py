@@ -18,7 +18,6 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-import threading
 from typing import BinaryIO, Union
 from PIL import Image
 from pillow_heif import register_heif_opener
@@ -88,22 +87,37 @@ _whisper_model = None
 
 
 def _get_whisper_model():
+    """Return a wrapper with a `transcribe(path, **kwargs) -> dict` method.
+
+    Prefer `faster_whisper.WhisperModel` when available; fall back to
+    OpenAI's `whisper` if not. The wrapper normalizes the return value so
+    callers can always do `result.get('text', '')`.
+    """
     global _whisper_model
-    if _whisper_model is None:
-        import whisper
+    if _whisper_model is not None:
+        return _whisper_model
 
-        _whisper_model = whisper.load_model(WHISPER_MODEL_SIZE)
+    from faster_whisper import WhisperModel
+
+    # Prefer GPU when available
+    device = "cpu"
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            device = "cuda"
+    except Exception:
+        pass
+
+    compute_type = "float16" if device == "cuda" else None
+    if compute_type is not None:
+        model = WhisperModel(
+            WHISPER_MODEL_SIZE, device=device, compute_type=compute_type
+        )
+    else:
+        model = WhisperModel(WHISPER_MODEL_SIZE, device=device)
+    _whisper_model = model
     return _whisper_model
-
-
-# PyTorch's CPU inference path is not safe to call concurrently from
-# multiple threads against the same model -- doing so causes thread
-# oversubscription in its native BLAS/OpenMP backend and can segfault the
-# whole process (this is exactly what happens if build_index() is run with
-# workers > 1 and Whisper calls aren't serialized). This lock ensures only
-# one thread is ever inside model loading or transcribe() at a time;
-# other extractors are unaffected and still run fully concurrently.
-_whisper_lock = threading.Lock()
 
 
 def extract_text(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
@@ -344,9 +358,7 @@ def _extract_audio(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
 
     Whisper's `transcribe()` shells out to ffmpeg internally and expects a
     real file path, so bytes/file-like input is written to a temp file
-    first (same pattern as PDF handling below). The whole operation is
-    serialized via `_whisper_lock` -- see the comment above that lock for
-    why concurrent calls from multiple threads are unsafe.
+    first (same pattern as PDF handling below).
     """
     audio_path, cleanup = _ensure_audio_path(filename, data)
     try:
@@ -355,8 +367,11 @@ def _extract_audio(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
 
         model = _get_whisper_model()
 
-        with _whisper_lock:
-            result = model.transcribe(str(audio_path))
+        # faster_whisper returns (segments, info)
+        segments, info = model.transcribe(audio_path)
+        # segments are objects with a `text` attribute
+        text = "".join(getattr(s, "text", str(s)) for s in segments)
+        result = {"text": text, "info": info}
 
         return result.get("text", "").strip()
     except Exception as e:
@@ -474,11 +489,11 @@ def _pdf_embedded_text(pdf_path: Path) -> str:
 
 def _pdf_ocr(pdf_path: Path) -> str:
     # Requires PyMuPDF (`pip install pymupdf`, imported as `fitz`).
-    import fitz
+    import pymupdf
     import pytesseract
 
     try:
-        doc = fitz.open(str(pdf_path))
+        doc = pymupdf.open(str(pdf_path))
     except Exception:
         return ""
 

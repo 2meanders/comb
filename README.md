@@ -81,7 +81,6 @@ python comb.py clear --folder "path/to/folder"
 The tool supports a few useful flags:
 
 - `--folder`, `-f`: target directory to index or search
-- `--workers`: number of worker threads used during indexing
 - `--verbose`: print more detailed progress output
 - `--include-hidden`, `-a`: include hidden and ignored paths
 - `--context`, `-c`: number of characters to show around a match

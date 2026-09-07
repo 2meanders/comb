@@ -54,7 +54,6 @@ def cmd_build(args):
         build_index(
             folder,
             verbose=args.verbose,
-            workers=args.workers,
             index_all=args.all,
         )
 
@@ -69,7 +68,6 @@ def cmd_rebuild(args):
         build_index(
             folder,
             verbose=args.verbose,
-            workers=args.workers,
             index_all=args.all,
         )
 
@@ -86,21 +84,23 @@ def cmd_search(args):
     with interruptible("Index build interrupted by user. Exiting.", folder, args):
         if not index_exists(folder):
             print("No index found, building one first (this may take a while)...")
-            build_index(
-                folder, verbose=args.verbose, workers=args.workers, index_all=args.all
-            )
+            build_index(folder, verbose=args.verbose, index_all=args.all)
             index_newly_built = True
 
     with interruptible("Index update interrupted by user. Exiting.", folder, args):
         if not args.no_update and not index_newly_built:
             print("Updating index...")
-            build_index(
-                folder, verbose=args.verbose, workers=args.workers, index_all=args.all
-            )
+            build_index(folder, verbose=args.verbose, index_all=args.all)
 
     with interruptible("Search interrupted by user. Exiting.", folder, args):
         print("Searching...")
-        search_index(folder, args.term, context=args.context, mode=args.mode, fuzzy_threshold=args.fuzzy_threshold)
+        search_index(
+            folder,
+            args.term,
+            context=args.context,
+            mode=args.mode,
+            fuzzy_threshold=args.fuzzy_threshold,
+        )
 
     if args.clear:
         _clear_index(folder, verbose=args.verbose)
@@ -118,12 +118,6 @@ def _add_common_index_args(p):
         type=str,
         default=".",
         help="Folder to index (default: current directory)",
-    )
-    p.add_argument(
-        "--workers",
-        type=int,
-        default=1,
-        help="Number of worker threads to use while indexing (default: 1)",
     )
     p.add_argument(
         "-v",
@@ -220,7 +214,7 @@ def build_parser():
         "--fuzzy-threshold",
         type=int,
         default=80,
-        help="The threshold for a fuzzy search match to be yielded as a result. Does nothing when the search algorithm is not fuzzy search."
+        help="The threshold for a fuzzy search match to be yielded as a result. Does nothing when the search algorithm is not fuzzy search.",
     )
     p_search.set_defaults(func=cmd_search)
 

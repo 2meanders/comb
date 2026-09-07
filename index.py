@@ -10,7 +10,6 @@ Schema:
 import re
 import sqlite3
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -70,7 +69,7 @@ def _cache_path(folder: Path) -> Path:
 @contextmanager
 def _connect(folder: Path):
     """Open a WAL-mode connection with the REGEXP function registered."""
-    con = sqlite3.connect(_cache_path(folder), check_same_thread=False)
+    con = sqlite3.connect(_cache_path(folder))
     try:
         con.execute("PRAGMA journal_mode=WAL")
         con.execute("PRAGMA synchronous=NORMAL")
@@ -123,7 +122,7 @@ def iter_index(folder: Path) -> Iterator[tuple[str, dict]] | None:
     def _generate():
         con = None
         try:
-            con = sqlite3.connect(_cache_path(folder), check_same_thread=False)
+            con = sqlite3.connect(_cache_path(folder))
             con.execute("PRAGMA journal_mode=WAL")
             cur = con.cursor()
             cur.arraysize = 100  # rows fetched from disk per round-trip
@@ -216,7 +215,6 @@ def _flush(con: sqlite3.Connection, results: list[dict]) -> None:
 def build_index(
     folder: Path,
     verbose: bool = True,
-    workers: int = 1,
     index_all: bool = False,
 ) -> None:
     """(Re)build the cache for `folder`.
@@ -237,44 +235,22 @@ def build_index(
         count_new = 0
         count_skip = 0
         count_removed = 0
-        pending = []
-
-        for entry in iter_entries(folder, index_all=index_all, known=existing):
-            seen.add(entry.virtual_path)
-            prev = existing.get(entry.virtual_path)
-            if prev and prev[0] == entry.mtime and prev[1] == entry.size:
-                count_skip += 1
-                continue
-            pending.append(entry)
 
         indexed_results: list[dict] = []
         interrupted = False
 
         try:
-            if workers <= 1:
-                for entry in pending:
-                    indexed_results.append(_index_entry(entry, verbose))
-                    if len(indexed_results) >= FLUSH_EVERY:
-                        count_new += len(indexed_results)
-                        _flush(con, indexed_results)
-            else:
-                worker_count = max(1, min(workers, len(pending) or 1))
-                with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                    futures = {
-                        executor.submit(_index_entry, entry, verbose): entry
-                        for entry in pending
-                    }
-                    try:
-                        for future in as_completed(futures):
-                            indexed_results.append(future.result())
-                            if len(indexed_results) >= FLUSH_EVERY:
-                                count_new += len(indexed_results)
-                                _flush(con, indexed_results)
-                    except KeyboardInterrupt:
-                        interrupted = True
-                        for f in futures:
-                            f.cancel()
-                        raise
+            # Stream entries instead of collecting them all in memory.
+            for entry in iter_entries(folder, index_all=index_all, known=existing):
+                seen.add(entry.virtual_path)
+                prev = existing.get(entry.virtual_path)
+                if prev and prev[0] == entry.mtime and prev[1] == entry.size:
+                    count_skip += 1
+                    continue
+                indexed_results.append(_index_entry(entry, verbose))
+                if len(indexed_results) >= FLUSH_EVERY:
+                    count_new += len(indexed_results)
+                    _flush(con, indexed_results)
 
         except KeyboardInterrupt:
             interrupted = True
@@ -332,7 +308,10 @@ def search_fts(folder: Path, query: str, context: int) -> list[dict]:
             WHERE files_fts MATCH ?
             ORDER BY rank
             """,
-            (2 * context + len(query), query,),
+            (
+                2 * context + len(query),
+                query,
+            ),
         )
         return [
             {"path_hl": row[0], "text_snip": row[1], "rank": row[2]}

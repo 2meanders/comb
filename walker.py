@@ -191,8 +191,8 @@ class KnownIndex:
 #
 # An ArchiveFormat knows how to list and lazily open the members of one kind
 # of archive. `open_member` must be safe to call much later than
-# `list_members` (extraction happens lazily, possibly from a worker thread),
-# so it always reopens `source` fresh rather than reusing a handle.
+# `list_members`, so it always reopens `source` fresh rather than reusing a
+# handle.
 #
 # To support a new archive type (tar, 7z, ...), write one class implementing
 # this interface and add an instance to ARCHIVE_FORMATS -- the recursive
