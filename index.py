@@ -10,12 +10,12 @@ Schema:
 import re
 import sqlite3
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
-from walker import iter_entries, INDEX_FILENAME
 from extractors import extract_text
+from walker import INDEX_FILENAME, iter_entries
 
 FLUSH_EVERY = 50  # rows flushed to DB per batch during build
 MAX_TEXT_CHARS = 6_000_000  # truncate extracted text beyond this
@@ -39,7 +39,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
     content_rowid='rowid',
     tokenize='trigram case_sensitive 0'
 );
+"""
 
+_TRIGGER_DDL = """
 CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
     INSERT INTO files_fts(rowid, virtual_path, text)
     VALUES (new.rowid, new.virtual_path, new.text);
@@ -212,6 +214,13 @@ def _flush(con: sqlite3.Connection, results: list[dict]) -> None:
     results.clear()
 
 
+def _rebuild_fts(con: sqlite3.Connection) -> None:
+    """Recreate the FTS index after bulk changes to the content table."""
+    con.execute("INSERT INTO files_fts(files_fts) VALUES ('rebuild')")
+    con.executescript(_TRIGGER_DDL)
+    con.commit()
+
+
 def build_index(
     folder: Path,
     verbose: bool = True,
@@ -238,6 +247,16 @@ def build_index(
 
         indexed_results: list[dict] = []
         interrupted = False
+        changed = False
+
+        # Avoid maintaining and merging trigram FTS segments for every row
+        # during a build; rebuild the index once after the table is updated.
+        con.executescript(
+            "DROP TRIGGER IF EXISTS files_ai;"
+            "DROP TRIGGER IF EXISTS files_ad;"
+            "DROP TRIGGER IF EXISTS files_au;"
+        )
+        con.commit()
 
         try:
             # Stream entries instead of collecting them all in memory.
@@ -247,6 +266,7 @@ def build_index(
                 if prev and prev[0] == entry.mtime and prev[1] == entry.size:
                     count_skip += 1
                     continue
+                changed = True
                 indexed_results.append(_index_entry(entry, verbose))
                 if len(indexed_results) >= FLUSH_EVERY:
                     count_new += len(indexed_results)
@@ -271,12 +291,19 @@ def build_index(
                     if verbose:
                         print(f"  - removing {k} from cache")
                 if removed:
+                    changed = True
                     con.commit()
 
                 con.execute(
                     "INSERT OR REPLACE INTO meta VALUES ('built_at', ?)",
                     (str(time.time()),),
                 )
+                con.commit()
+
+            if changed:
+                _rebuild_fts(con)
+            else:
+                con.executescript(_TRIGGER_DDL)
                 con.commit()
 
         total = con.execute("SELECT COUNT(*) FROM files").fetchone()[0]
