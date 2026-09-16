@@ -12,7 +12,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-from index import build_index, index_exists, clear_index
+from index import build_index, clear_index, index_exists
 from search_engine import search_index
 
 # ---------------------------------------------------------------------------

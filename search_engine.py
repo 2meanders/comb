@@ -134,7 +134,11 @@ def looks_like_regex(term: str) -> bool:
 
 
 def search_index(
-    folder: Path, term: str, context: int = 40, fuzzy_threshold: int = 80, mode: str = "auto"
+    folder: Path,
+    term: str,
+    context: int = 40,
+    fuzzy_threshold: int = 80,
+    mode: str = "auto",
 ) -> None:
     color_enabled = _supports_color()
 
@@ -153,7 +157,7 @@ def search_index(
             except sqlite3.OperationalError:
                 num_results = _search_regex(folder, term, context, color_enabled)
                 if num_results == 0:
-                    _search_fuzzy(folder, term, context, fuzzy_threshold, color_enabled) 
+                    _search_fuzzy(folder, term, context, fuzzy_threshold, color_enabled)
     elif mode == "regex":
         _search_regex(folder, term, context, color_enabled)
     elif mode == "fts":
@@ -165,7 +169,6 @@ def search_index(
             print(f"FTS query error ({e})")
     elif mode == "fuzzy":
         _search_fuzzy(folder, term, context, fuzzy_threshold, color_enabled)
-
 
 
 # ── regex backend ─────────────────────────────────────────────────────────────
@@ -268,11 +271,15 @@ def _search_fts(folder: Path, term: str, context: int, color_enabled: bool) -> i
 
     return len(results)
 
-def _search_fuzzy(folder: Path, term: str, context: int, threshold: int, color_enabled: bool) -> int:
+
+def _search_fuzzy(
+    folder: Path, term: str, context: int, threshold: int, color_enabled: bool
+) -> int:
     """
     threshold: 0-100
     """
     from rapidfuzz import fuzz
+
     index = iter_index(folder)
     if index is None:
         print("No index found. Exiting...")
@@ -296,16 +303,26 @@ def _search_fuzzy(folder: Path, term: str, context: int, threshold: int, color_e
     scored.sort(key=lambda x: x[0], reverse=True)
 
     for score, vpath_str, path_align, text, text_align in scored:
-        vpath_spans = [(path_align.dest_start, path_align.dest_end)] if path_align.score >= threshold else []
+        vpath_spans = (
+            [(path_align.dest_start, path_align.dest_end)]
+            if path_align.score >= threshold
+            else []
+        )
 
         if text_align and text_align.score >= threshold:
             start = max(0, text_align.dest_start - context)
             end = min(len(text), text_align.dest_end + context)
             snippet = text[start:end]
-            snippet_spans = [(text_align.dest_start - start, text_align.dest_end - start)]
+            snippet_spans = [
+                (text_align.dest_start - start, text_align.dest_end - start)
+            ]
             if start > 0:
                 snippet = "..." + snippet
-            snippet_spans = [(s + 3, e + 3) for s, e in snippet_spans] if start > 0 else snippet_spans
+            snippet_spans = (
+                [(s + 3, e + 3) for s, e in snippet_spans]
+                if start > 0
+                else snippet_spans
+            )
         else:
             snippet = _preview(text)
             snippet_spans = None

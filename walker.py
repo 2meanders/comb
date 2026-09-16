@@ -26,9 +26,10 @@ import tarfile
 import tempfile
 import zipfile
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator, BinaryIO, Optional, Union
+from typing import BinaryIO
 
 INDEX_FILENAME = ".combed"
 COMBIGNORE_FILENAME = ".combignore"
@@ -93,7 +94,7 @@ def _is_ignored_path(rel_path: str) -> bool:
 
 
 def _is_ignored_path_with_patterns(
-    rel_path: str, extra_patterns: Optional[list[str]]
+    rel_path: str, extra_patterns: list[str] | None
 ) -> bool:
     """Check a '/'-separated relative path (disk-relative or archive-internal)
     against the ignore rules and optional additional patterns.
@@ -146,7 +147,7 @@ class Entry:
     virtual_path: str  # path used as the index key / display path
     mtime: float  # modification time, used to detect changes
     size: int  # size in bytes, used to detect changes
-    data_func: Callable[[], Union[bytes, Path, BinaryIO]]
+    data_func: Callable[[], bytes | Path | BinaryIO]
     # True for the archive/container file itself (a zip, tar, ...): it gets
     # an Entry so it's addressable/searchable by path like anything else,
     # but has no text of its own -- callers should not run extraction on it.
@@ -173,7 +174,7 @@ class KnownIndex:
         self._map = known
         self._sorted_keys = sorted(known.keys())
 
-    def get(self, vpath: str) -> Optional[tuple[float, int]]:
+    def get(self, vpath: str) -> tuple[float, int] | None:
         return self._map.get(vpath)
 
     def children(self, prefix: str) -> list[tuple[str, tuple[float, int]]]:
@@ -203,11 +204,11 @@ class ArchiveFormat(ABC):
     suffixes: tuple[str, ...] = ()
 
     @abstractmethod
-    def list_members(self, source: Union[Path, BinaryIO]) -> list[tuple[str, int]]:
+    def list_members(self, source: Path | BinaryIO) -> list[tuple[str, int]]:
         """Return (name, size) for every regular file directly in the archive."""
 
     @abstractmethod
-    def open_member(self, source: Union[Path, BinaryIO], name: str) -> BinaryIO:
+    def open_member(self, source: Path | BinaryIO, name: str) -> BinaryIO:
         """Open one member for reading, reopening `source` from scratch."""
 
 
@@ -229,7 +230,7 @@ class _ClosingReader(io.BufferedReader):
 class ZipArchive(ArchiveFormat):
     suffixes = (".zip",)
 
-    def _open(self, source: Union[Path, BinaryIO]) -> zipfile.ZipFile:
+    def _open(self, source: Path | BinaryIO) -> zipfile.ZipFile:
         if isinstance(source, Path):
             return zipfile.ZipFile(source, "r")
         source.seek(0)
@@ -249,7 +250,7 @@ class TarArchive(ArchiveFormat):
     # all of these; the suffixes are just listed for clarity/matching.
     suffixes = (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")
 
-    def _open(self, source: Union[Path, BinaryIO]) -> tarfile.TarFile:
+    def _open(self, source: Path | BinaryIO) -> tarfile.TarFile:
         if isinstance(source, Path):
             return tarfile.open(source, "r:*")
         source.seek(0)
@@ -314,7 +315,7 @@ try:
     class RarArchive(ArchiveFormat):
         suffixes = (".rar",)
 
-        def _open(self, source: Union[Path, BinaryIO]) -> "rarfile.RarFile":
+        def _open(self, source: Path | BinaryIO) -> "rarfile.RarFile":
             if isinstance(source, Path):
                 return rarfile.RarFile(source, "r")
             source.seek(0)
@@ -341,7 +342,7 @@ for _fmt in (ZipArchive(), TarArchive(), *_OPTIONAL_FORMATS):
         ARCHIVE_FORMATS[_suffix] = _fmt
 
 
-def _archive_format_for(filename: str) -> Optional[ArchiveFormat]:
+def _archive_format_for(filename: str) -> ArchiveFormat | None:
     lower = filename.lower()
     for suffix, fmt in ARCHIVE_FORMATS.items():
         if lower.endswith(suffix):
@@ -369,13 +370,13 @@ class EmlAttachments(ArchiveFormat):
 
     suffixes = (".eml",)
 
-    def _read_source_bytes(self, source: Union[Path, BinaryIO]) -> bytes:
+    def _read_source_bytes(self, source: Path | BinaryIO) -> bytes:
         if isinstance(source, Path):
             return source.read_bytes()
         source.seek(0)
         return source.read()
 
-    def _attachments(self, source: Union[Path, BinaryIO]) -> list[tuple[str, bytes]]:
+    def _attachments(self, source: Path | BinaryIO) -> list[tuple[str, bytes]]:
         from email import policy
         from email.parser import BytesParser
 
@@ -431,7 +432,7 @@ for _fmt in (EmlAttachments(),):
         CONTAINER_FORMATS[_suffix] = _fmt
 
 
-def _container_format_for(filename: str) -> Optional[ArchiveFormat]:
+def _container_format_for(filename: str) -> ArchiveFormat | None:
     lower = filename.lower()
     for suffix, fmt in CONTAINER_FORMATS.items():
         if lower.endswith(suffix):
@@ -445,7 +446,7 @@ def _container_format_for(filename: str) -> Optional[ArchiveFormat]:
 def iter_entries(
     root: Path,
     index_all: bool,
-    known: Optional[dict[str, tuple[float, int]]] = None,
+    known: dict[str, tuple[float, int]] | None = None,
 ) -> Iterator[Entry]:
     """Walk `root` on disk, yielding an Entry for every real file, every
     file found inside (possibly nested) archives, and every attachment
@@ -460,7 +461,7 @@ def iter_entries(
     root = Path(root)
     known_index = KnownIndex(known) if known else None
     # read .combignore (if present) unless index_all is requested
-    combignore_patterns: Optional[list[str]] = None
+    combignore_patterns: list[str] | None = None
     if not index_all:
         combignore_file = root / COMBIGNORE_FILENAME
         if combignore_file.is_file():
@@ -505,7 +506,7 @@ def _make_disk_reader(path: Path) -> Callable[[], Path]:
 
 
 def _make_member_reader(
-    fmt: ArchiveFormat, source: Union[Path, BinaryIO], name: str
+    fmt: ArchiveFormat, source: Path | BinaryIO, name: str
 ) -> Callable[[], BinaryIO]:
     def _read() -> BinaryIO:
         return fmt.open_member(source, name)
@@ -543,10 +544,10 @@ def _handle_source(
     mtime: float,
     size: int,
     index_all: bool,
-    index_ignore_patterns: Optional[list[str]],
-    self_data_func: Callable[[], Union[bytes, Path, BinaryIO]],
-    open_for_recursion: Callable[[], Union[Path, BinaryIO]],
-    known: Optional["KnownIndex"] = None,
+    index_ignore_patterns: list[str] | None,
+    self_data_func: Callable[[], bytes | Path | BinaryIO],
+    open_for_recursion: Callable[[], Path | BinaryIO],
+    known: "KnownIndex | None" = None,
 ) -> Iterator[Entry]:
     """Decide what one file -- on disk, or an archive/eml member -- is, and
     handle it accordingly:
@@ -615,11 +616,11 @@ def _handle_source(
 def _iter_archive(
     prefix: str,
     fmt: ArchiveFormat,
-    source: Union[Path, BinaryIO],
+    source: Path | BinaryIO,
     mtime: float,
     index_all: bool,
-    index_ignore_patterns: Optional[list[str]],
-    known: Optional["KnownIndex"] = None,
+    index_ignore_patterns: list[str] | None,
+    known: "KnownIndex | None" = None,
 ) -> Iterator[Entry]:
     """Yield an Entry for every member found in `source` via `fmt`,
     recursing into any nested archives/containers found inside it.
@@ -653,8 +654,8 @@ def _iter_archive(
 
 
 def _materialize_member(
-    fmt: ArchiveFormat, source: Union[Path, BinaryIO], name: str, size: int
-) -> Union[io.BytesIO, "tempfile.SpooledTemporaryFile"]:
+    fmt: ArchiveFormat, source: Path | BinaryIO, name: str, size: int
+) -> "io.BytesIO | tempfile.SpooledTemporaryFile":
     """Read one archive/container member fully into a buffer so it can
     itself be walked as a nested archive/container. Only called when a
     member's name indicates it needs recursing into (see _handle_source) --

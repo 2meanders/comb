@@ -18,7 +18,8 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import BinaryIO, Union
+from typing import BinaryIO
+
 from PIL import Image
 from pillow_heif import register_heif_opener
 
@@ -120,7 +121,7 @@ def _get_whisper_model():
     return _whisper_model
 
 
-def extract_text(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
+def extract_text(filename: str, data: bytes | Path | BinaryIO) -> str:
     """Dispatch to the right extractor based on file extension.
     Never raises -- returns "" on any failure so a single bad file
     can't abort the whole index build."""
@@ -177,7 +178,7 @@ def _is_probably_text(raw_bytes: bytes, sample_size: int = 8000) -> bool:
     return (len(nontext) / len(sample)) <= 0.30
 
 
-def _read_bytes(data: Union[bytes, Path, BinaryIO]) -> bytes:
+def _read_bytes(data: bytes | Path | BinaryIO) -> bytes:
     if isinstance(data, bytes):
         return data
     if isinstance(data, Path):
@@ -186,7 +187,7 @@ def _read_bytes(data: Union[bytes, Path, BinaryIO]) -> bytes:
     return data.read()
 
 
-def _as_file_like(data: Union[bytes, Path, BinaryIO]):
+def _as_file_like(data: bytes | Path | BinaryIO):
     """Return something openable by libraries that accept a path-or-file-obj
     (python-docx, openpyxl, python-pptx all accept a filename or a
     file-like object with .read())."""
@@ -208,12 +209,12 @@ def _decode_bytes(raw_bytes: bytes) -> str:
     return raw_bytes.decode("utf-8", errors="ignore")
 
 
-def _extract_plaintext(data: Union[bytes, Path, BinaryIO]) -> str:
+def _extract_plaintext(data: bytes | Path | BinaryIO) -> str:
     raw_bytes = _read_bytes(data)
     return _decode_bytes(raw_bytes)
 
 
-def _extract_image(data: Union[bytes, Path, BinaryIO]) -> str:
+def _extract_image(data: bytes | Path | BinaryIO) -> str:
     import pytesseract
 
     if isinstance(data, bytes):
@@ -229,7 +230,7 @@ def _extract_image(data: Union[bytes, Path, BinaryIO]) -> str:
     return text.strip()
 
 
-def _extract_docx(data: Union[bytes, Path, BinaryIO]) -> str:
+def _extract_docx(data: bytes | Path | BinaryIO) -> str:
     """Extract text from a .docx: paragraphs, tables, and headers/footers."""
     import docx
 
@@ -255,7 +256,7 @@ def _extract_docx(data: Union[bytes, Path, BinaryIO]) -> str:
     return "\n".join(pieces)
 
 
-def _extract_xlsx(data: Union[bytes, Path, BinaryIO]) -> str:
+def _extract_xlsx(data: bytes | Path | BinaryIO) -> str:
     """Extract text from .xlsx/.xlsm: every cell's value, sheet by sheet."""
     import openpyxl
 
@@ -277,7 +278,7 @@ def _extract_xlsx(data: Union[bytes, Path, BinaryIO]) -> str:
     return "\n".join(pieces)
 
 
-def _extract_pptx(data: Union[bytes, Path, BinaryIO]) -> str:
+def _extract_pptx(data: bytes | Path | BinaryIO) -> str:
     """Extract text from .pptx: all text frames and table cells, per slide,
     plus speaker notes."""
     from pptx import Presentation
@@ -312,7 +313,7 @@ def _extract_pptx(data: Union[bytes, Path, BinaryIO]) -> str:
     return "\n".join(pieces)
 
 
-def _extract_eml(data: Union[bytes, Path, BinaryIO]) -> str:
+def _extract_eml(data: bytes | Path | BinaryIO) -> str:
     """Extract headers + body text from an .eml file. Deliberately doesn't
     touch attachments -- see the EML_EXTS comment above for why."""
     from email import policy
@@ -353,7 +354,7 @@ def _strip_html(raw_html: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _extract_audio(filename: str, data: Union[bytes, Path, BinaryIO]) -> str:
+def _extract_audio(filename: str, data: bytes | Path | BinaryIO) -> str:
     """Transcribe an audio file to text using OpenAI Whisper.
 
     Whisper's `transcribe()` shells out to ffmpeg internally and expects a
@@ -424,7 +425,7 @@ def _has_audio_stream(audio_path: Path) -> bool:
 
 
 def _ensure_audio_path(
-    filename: str, data: Union[bytes, Path, BinaryIO]
+    filename: str, data: bytes | Path | BinaryIO
 ) -> tuple[Path, bool]:
     if isinstance(data, Path):
         return data, False
@@ -445,7 +446,7 @@ def _ensure_audio_path(
     return Path(tmp.name), True
 
 
-def _extract_pdf(data: Union[bytes, Path, BinaryIO]) -> str:
+def _extract_pdf(data: bytes | Path | BinaryIO) -> str:
     pdf_path, cleanup = _ensure_pdf_path(data)
     try:
         embedded = _pdf_embedded_text(pdf_path)
@@ -459,7 +460,7 @@ def _extract_pdf(data: Union[bytes, Path, BinaryIO]) -> str:
                 pass
 
 
-def _ensure_pdf_path(data: Union[bytes, Path, BinaryIO]) -> tuple[Path, bool]:
+def _ensure_pdf_path(data: bytes | Path | BinaryIO) -> tuple[Path, bool]:
     if isinstance(data, Path):
         return data, False
 
