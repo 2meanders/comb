@@ -64,14 +64,24 @@ END;
 # ── connection ────────────────────────────────────────────────────────────────
 
 
-def _cache_path(folder: Path) -> Path:
-    return Path(folder) / INDEX_FILENAME
+def _cache_path(folder: Path, index_dir: Path | None = None) -> Path:
+    """Where the .combed cache file lives.
+
+    Normally that's inside `folder` itself. But `index_dir`, when given,
+    decouples the two -- the content being indexed can live somewhere the
+    cache file shouldn't (e.g. a cloud-synced Drive folder), while the
+    cache lives elsewhere (e.g. a preset's index home).
+    """
+    base = Path(index_dir) if index_dir is not None else Path(folder)
+    return base / INDEX_FILENAME
 
 
 @contextmanager
-def _connect(folder: Path):
+def _connect(folder: Path, index_dir: Path | None = None):
     """Open a WAL-mode connection with the REGEXP function registered."""
-    con = sqlite3.connect(_cache_path(folder))
+    cache_path = _cache_path(folder, index_dir)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(cache_path)
     try:
         con.execute("PRAGMA journal_mode=WAL")
         con.execute("PRAGMA synchronous=NORMAL")
@@ -103,7 +113,7 @@ def _connect(folder: Path):
 # ── public cache API ──────────────────────────────────────────────────────────
 
 
-def iter_index(folder: Path) -> Iterator[tuple[str, dict]] | None:
+def iter_index(folder: Path, index_dir: Path | None = None) -> Iterator[tuple[str, dict]] | None:
     """Yield (virtual_path, meta) pairs one at a time from the cache.
 
     Returns None if the cache doesn't exist, so callers can distinguish
@@ -117,14 +127,14 @@ def iter_index(folder: Path) -> Iterator[tuple[str, dict]] | None:
                 ...
     """
 
-    p = _cache_path(folder)
+    p = _cache_path(folder, index_dir)
     if not p.exists():
         return None
 
     def _generate():
         con = None
         try:
-            con = sqlite3.connect(_cache_path(folder))
+            con = sqlite3.connect(p)
             con.execute("PRAGMA journal_mode=WAL")
             cur = con.cursor()
             cur.arraysize = 100  # rows fetched from disk per round-trip
@@ -138,9 +148,9 @@ def iter_index(folder: Path) -> Iterator[tuple[str, dict]] | None:
     return _generate()
 
 
-def save_cache(folder: Path, cache: dict) -> None:
+def save_cache(folder: Path, cache: dict, index_dir: Path | None = None) -> None:
     """Bulk-write a plain dict into the DB. Useful for one-off migrations."""
-    with _connect(folder) as con:
+    with _connect(folder, index_dir) as con:
         con.executemany(
             "INSERT OR REPLACE INTO files (virtual_path, mtime, size, text) VALUES (?, ?, ?, ?)",
             [
@@ -151,9 +161,9 @@ def save_cache(folder: Path, cache: dict) -> None:
         con.commit()
 
 
-def clear_index(folder: Path) -> bool:
+def clear_index(folder: Path, index_dir: Path | None = None) -> bool:
     """Delete the cache DB for `folder`."""
-    p = _cache_path(folder)
+    p = _cache_path(folder, index_dir)
     if p.exists():
         p.unlink()
         return True
@@ -225,14 +235,18 @@ def build_index(
     folder: Path,
     verbose: bool = True,
     index_all: bool = False,
+    index_dir: Path | None = None,
 ) -> None:
     """(Re)build the cache for `folder`.
+
+    By default the cache lives inside `folder` itself. Pass `index_dir` to
+    write it somewhere else instead (see `_cache_path`).
 
     Safe to interrupt: results are flushed every FLUSH_EVERY completions.
     """
     folder = Path(folder)
 
-    with _connect(folder) as con:
+    with _connect(folder, index_dir) as con:
         existing = {
             row[0]: (row[1], row[2])
             for row in con.execute(
@@ -316,15 +330,15 @@ def build_index(
             print(msg)
 
 
-def index_exists(folder: Path) -> bool:
+def index_exists(folder: Path, index_dir: Path | None = None) -> bool:
     """Return True if a cache exists for `folder`."""
-    return _cache_path(folder).exists()
+    return _cache_path(folder, index_dir).exists()
 
 
-def search_fts(folder: Path, query: str, context: int) -> list[dict]:
+def search_fts(folder: Path, query: str, context: int, index_dir: Path | None = None) -> list[dict]:
     """FTS5 MATCH search. Raises sqlite3.OperationalError on malformed
     FTS5 syntax so callers can decide how to handle it."""
-    with _connect(folder) as con:
+    with _connect(folder, index_dir) as con:
         cur = con.execute(
             """
             SELECT

@@ -142,6 +142,58 @@ def _is_ignored_path_with_patterns(
     return ignored
 
 
+def _read_combignore(directory: Path) -> list[str] | None:
+    combignore_file = directory / COMBIGNORE_FILENAME
+    if not combignore_file.is_file():
+        return None
+    try:
+        return combignore_file.read_text().splitlines()
+    except (OSError, UnicodeError):
+        return None
+
+
+def _is_ignored_by_combignores(
+    root: Path,
+    path: Path,
+    combignore_cache: dict[Path, list[str] | None],
+) -> bool:
+    """Apply every .combignore from root to path's parent directory."""
+    relative = path.relative_to(root)
+    directories = [root]
+    directories.extend(root / part for part in relative.parent.parts)
+
+    for directory in directories:
+        if directory not in combignore_cache:
+            combignore_cache[directory] = _read_combignore(directory)
+        patterns = combignore_cache[directory]
+        if patterns is not None and _is_ignored_path_with_patterns(
+            str(path.relative_to(directory)), patterns
+        ):
+            return True
+    return False
+
+
+def _combignore_patterns_for_path(
+    root: Path,
+    path: Path,
+    combignore_cache: dict[Path, list[str] | None],
+) -> list[str]:
+    """Return patterns from every .combignore above path, root first."""
+    relative = path.relative_to(root)
+    directories = [root]
+    directories.extend(root / part for part in relative.parent.parts)
+
+    applicable_patterns = []
+    for directory in directories:
+        if directory not in combignore_cache:
+            combignore_cache[directory] = _read_combignore(directory)
+        patterns = combignore_cache[directory]
+        if patterns is None:
+            continue
+        applicable_patterns.extend(patterns)
+    return applicable_patterns
+
+
 @dataclass
 class Entry:
     virtual_path: str  # path used as the index key / display path
@@ -460,18 +512,7 @@ def iter_entries(
     """
     root = Path(root)
     known_index = KnownIndex(known) if known else None
-    # read .combignore (if present) unless index_all is requested
-    combignore_patterns: list[str] | None = None
-    if not index_all:
-        combignore_file = root / COMBIGNORE_FILENAME
-        if combignore_file.is_file():
-            try:
-                combignore_patterns = [
-                    line.rstrip("\n")
-                    for line in combignore_file.read_text().splitlines()
-                ]
-            except Exception:
-                combignore_patterns = None
+    combignore_cache: dict[Path, list[str] | None] = {}
 
     for path in sorted(root.rglob("*")):
         if path.is_dir():
@@ -479,8 +520,13 @@ def iter_entries(
         if _is_comb_file(path):
             continue
         rel = str(path.relative_to(root))
-        if not index_all and _is_ignored_path_with_patterns(rel, combignore_patterns):
-            continue
+        combignore_patterns = None
+        if not index_all:
+            combignore_patterns = _combignore_patterns_for_path(
+                root, path, combignore_cache
+            )
+            if _is_ignored_by_combignores(root, path, combignore_cache):
+                continue
 
         stat = path.stat()
         yield from _handle_source(

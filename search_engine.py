@@ -1,7 +1,7 @@
+import os
 import re
 import sqlite3
 import sys
-import os
 from pathlib import Path
 
 from index import iter_index
@@ -139,6 +139,7 @@ def search_index(
     context: int = 40,
     fuzzy_threshold: int = 80,
     mode: str = "auto",
+    index_dir: Path | None = None,
 ) -> None:
     color_enabled = _supports_color()
 
@@ -148,38 +149,50 @@ def search_index(
 
     if mode == "auto":
         if looks_like_regex(term):
-            _search_regex(folder, term, context, color_enabled)
+            _search_regex(folder, term, context, color_enabled, index_dir)
         else:
             try:
-                num_results = _search_fts(folder, term, context, color_enabled)
+                num_results = _search_fts(
+                    folder, term, context, color_enabled, index_dir
+                )
                 if num_results == 0:
-                    _search_regex(folder, term, context, color_enabled)
+                    _search_regex(folder, term, context, color_enabled, index_dir)
             except sqlite3.OperationalError:
-                num_results = _search_regex(folder, term, context, color_enabled)
+                num_results = _search_regex(
+                    folder, term, context, color_enabled, index_dir
+                )
                 if num_results == 0:
-                    _search_fuzzy(folder, term, context, fuzzy_threshold, color_enabled)
+                    _search_fuzzy(
+                        folder, term, context, fuzzy_threshold, color_enabled, index_dir
+                    )
     elif mode == "regex":
-        _search_regex(folder, term, context, color_enabled)
+        _search_regex(folder, term, context, color_enabled, index_dir)
     elif mode == "fts":
         try:
-            _search_fts(folder, term, context, color_enabled)
+            _search_fts(folder, term, context, color_enabled, index_dir)
         except sqlite3.OperationalError as e:
             # Bad FTS5 syntax (e.g. an unmatched quote/paren) -- fall back to regex
             # rather than surfacing a raw sqlite error to the user.
             print(f"FTS query error ({e})")
     elif mode == "fuzzy":
-        _search_fuzzy(folder, term, context, fuzzy_threshold, color_enabled)
+        _search_fuzzy(folder, term, context, fuzzy_threshold, color_enabled, index_dir)
 
 
 # ── regex backend ─────────────────────────────────────────────────────────────
 
 
-def _search_regex(folder: Path, term: str, context: int, color_enabled: bool) -> int:
+def _search_regex(
+    folder: Path,
+    term: str,
+    context: int,
+    color_enabled: bool,
+    index_dir: Path | None = None,
+) -> int:
     """
     Returns the number of results.
     """
 
-    index = iter_index(folder)
+    index = iter_index(folder, index_dir)
     if index is None:
         print("No index found. Exiting...")
         return
@@ -233,13 +246,19 @@ def _search_regex(folder: Path, term: str, context: int, color_enabled: bool) ->
 # ── FTS5 backend ──────────────────────────────────────────────────────────────
 
 
-def _search_fts(folder: Path, term: str, context: int, color_enabled: bool) -> int:
+def _search_fts(
+    folder: Path,
+    term: str,
+    context: int,
+    color_enabled: bool,
+    index_dir: Path | None = None,
+) -> int:
     """
     Returns the number of results.
     """
     from index import search_fts
 
-    results = search_fts(folder, term, context)
+    results = search_fts(folder, term, context, index_dir)
 
     if not results:
         print("No matches found.")
@@ -273,14 +292,19 @@ def _search_fts(folder: Path, term: str, context: int, color_enabled: bool) -> i
 
 
 def _search_fuzzy(
-    folder: Path, term: str, context: int, threshold: int, color_enabled: bool
+    folder: Path,
+    term: str,
+    context: int,
+    threshold: int,
+    color_enabled: bool,
+    index_dir: Path | None = None,
 ) -> int:
     """
     threshold: 0-100
     """
     from rapidfuzz import fuzz
 
-    index = iter_index(folder)
+    index = iter_index(folder, index_dir)
     if index is None:
         print("No index found. Exiting...")
         return 0
